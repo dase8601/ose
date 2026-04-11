@@ -310,6 +310,7 @@ def main():
     parser.add_argument("--device", default="auto",       help="auto | mps | cpu | cuda")
     parser.add_argument("--steps",  type=int, default=400_000)
     parser.add_argument("--seed",   type=int, default=42)
+    parser.add_argument("--n-envs", type=int, default=16,  help="parallel envs (16 for GPU, 4 for CPU/MPS)")
     args = parser.parse_args()
 
     # Auto-detect device
@@ -355,6 +356,7 @@ def main():
             device     = args.device,
             max_steps  = args.steps,
             seed       = args.seed,
+            n_envs     = args.n_envs,
         )
         all_results[cond] = result
 
