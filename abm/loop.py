@@ -115,8 +115,9 @@ def make_vec_env(n_envs: int, seed: int = 0, use_async: bool = True):
     SyncVectorEnv:  sequential fallback for systems where multiprocessing is flaky.
     """
     fns = [lambda i=i: make_env(seed=seed + i) for i in range(n_envs)]
-    VecCls = AsyncVectorEnv if use_async else SyncVectorEnv
-    return VecCls(fns)
+    if use_async:
+        return AsyncVectorEnv(fns, shared_memory=False)
+    return SyncVectorEnv(fns)
 
 
 def batch_obs_to_tensor(obs_dict, device: str) -> torch.Tensor:
