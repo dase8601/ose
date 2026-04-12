@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 # Hyperparameters
 # ---------------------------------------------------------------------------
 
-LATENT_DIM  = 128
+LATENT_DIM  = 256
 N_ACTIONS   = 7
 IMG_H = IMG_W = 48      # MiniGrid-DoorKey-6x6 with tile_size=8
 
@@ -139,21 +139,29 @@ def single_obs_to_tensor(obs_dict, device: str) -> torch.Tensor:
 
 def eval_agent(agent: PPOAgent, encoder, device: str, seed_offset: int = 1000,
                n_eps: int = EVAL_EPISODES) -> float:
-    """Evaluate PPO agent with single env — returns success rate."""
+    """Evaluate PPO agent with single env — returns success rate.
+
+    Maintains per-episode LSTM state; resets at each episode boundary.
+    """
     successes = 0
     for ep in range(n_eps):
         env = make_env(seed=seed_offset + ep)
         obs, _ = env.reset(seed=seed_offset + ep)
+        lstm_state = agent.get_initial_state(1, device)
+        done_t   = torch.zeros(1, device=device)
         done     = False
         ep_steps = 0
         ep_ret   = 0.0
         while not done and ep_steps < 300:
             with torch.no_grad():
                 z = encoder(obs)
-                action, _, _, _ = agent.get_action_and_value(z)
+                action, _, _, _, lstm_state = agent.get_action_and_value(
+                    z, lstm_state, done_t
+                )
             obs, r, term, trunc, _ = env.step(action.item())
-            done    = term or trunc
-            ep_ret += r
+            done   = term or trunc
+            done_t = torch.tensor([float(done)], device=device)
+            ep_ret  += r
             ep_steps += 1
         if ep_ret > 0.5:
             successes += 1
@@ -206,11 +214,13 @@ def run_abm_loop(
     obs, _ = envs.reset(seed=list(range(seed, seed + n_envs)))
 
     # ---- Model setup ----
+    HIDDEN_SIZE = 256   # LSTM hidden size — same for all conditions
+
     if condition == "ppo_only":
         flat_dim = IMG_H * IMG_W * 3
-        agent    = PPOAgent(latent_dim=flat_dim, n_actions=N_ACTIONS).to(device)
+        agent    = PPOAgent(latent_dim=flat_dim, n_actions=N_ACTIONS, hidden=HIDDEN_SIZE).to(device)
         ppo      = PPO(agent, lr=PPO_LR)
-        buf_ppo  = RolloutBuffer(PPO_ROLLOUT, n_envs, flat_dim, device)
+        buf_ppo  = RolloutBuffer(PPO_ROLLOUT, n_envs, flat_dim, device, hidden_size=HIDDEN_SIZE)
         lewm     = None
         opt_lewm = None
         buf_lew  = None
@@ -228,9 +238,9 @@ def run_abm_loop(
 
     else:
         lewm     = LeWM(latent_dim=LATENT_DIM, n_actions=N_ACTIONS).to(device)
-        agent    = PPOAgent(latent_dim=LATENT_DIM, n_actions=N_ACTIONS).to(device)
+        agent    = PPOAgent(latent_dim=LATENT_DIM, n_actions=N_ACTIONS, hidden=HIDDEN_SIZE).to(device)
         ppo      = PPO(agent, lr=PPO_LR)
-        buf_ppo  = RolloutBuffer(PPO_ROLLOUT, n_envs, LATENT_DIM, device)
+        buf_ppo  = RolloutBuffer(PPO_ROLLOUT, n_envs, LATENT_DIM, device, hidden_size=HIDDEN_SIZE)
         buf_lew  = ReplayBuffer(capacity=50_000)
         opt_lewm = optim.Adam(lewm.parameters(), lr=LEWM_LR)
 
@@ -270,6 +280,9 @@ def run_abm_loop(
     # Per-env episode return accumulators
     ep_ret    = np.zeros(n_envs, dtype=np.float32)
     last_done = np.zeros(n_envs, dtype=bool)
+
+    # LSTM hidden state — persists across outer loop iterations within ACT mode
+    lstm_state = agent.get_initial_state(n_envs, device)
 
     # ---- Main loop ----
     while env_step < max_steps:
@@ -337,9 +350,17 @@ def run_abm_loop(
 
         # ── ACT step ────────────────────────────────────────────────────────
         else:
+            done_t = torch.tensor(last_done.astype(np.float32), device=device)
+
+            # Snapshot LSTM state at the very start of each fresh rollout
+            if buf_ppo._ptr == 0:
+                buf_ppo.set_lstm_initial_state(*lstm_state)
+
             with torch.no_grad():
                 z = encoder(obs)                            # (N, D)
-                actions, log_probs, _, values = agent.get_action_and_value(z)
+                actions, log_probs, _, values, lstm_state = agent.get_action_and_value(
+                    z, lstm_state, done_t
+                )
 
             next_obs, rewards, terms, truncs, _ = envs.step(actions.cpu().numpy())
             dones   = terms | truncs
@@ -366,12 +387,10 @@ def run_abm_loop(
             obs       = next_obs
 
             if buf_ppo.is_full:
+                last_done_t = torch.tensor(last_done.astype(np.float32), device=device)
                 with torch.no_grad():
                     last_z   = encoder(obs)                 # (N, D)
-                    last_val = agent.get_value(last_z)      # (N,)
-                last_done_t = torch.tensor(
-                    last_done.astype(np.float32), device=device
-                )
+                    last_val = agent.get_value(last_z, lstm_state, last_done_t)
                 ppo.update(buf_ppo, last_val, last_done_t)
 
         # ── Periodic evaluation ─────────────────────────────────────────────
@@ -421,19 +440,21 @@ def run_abm_loop(
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     if condition == "ppo_only":
         ckpt = {
-            "condition": condition,
-            "agent":     agent.state_dict(),
-            "flat_dim":  IMG_H * IMG_W * 3,
-            "env_step":  env_step,
+            "condition":   condition,
+            "agent":       agent.state_dict(),
+            "flat_dim":    IMG_H * IMG_W * 3,
+            "hidden_size": HIDDEN_SIZE,
+            "env_step":    env_step,
         }
     else:
         ckpt = {
-            "condition":  condition,
-            "lewm":       lewm.state_dict(),
-            "agent":      agent.state_dict(),
-            "latent_dim": LATENT_DIM,
-            "n_actions":  N_ACTIONS,
-            "env_step":   env_step,
+            "condition":   condition,
+            "lewm":        lewm.state_dict(),
+            "agent":       agent.state_dict(),
+            "latent_dim":  LATENT_DIM,
+            "hidden_size": HIDDEN_SIZE,
+            "n_actions":   N_ACTIONS,
+            "env_step":    env_step,
         }
     ckpt_path = ckpt_dir / f"checkpoint_{condition}.pt"
     torch.save(ckpt, ckpt_path)

@@ -27,8 +27,9 @@ from abm.lewm import LeWM
 from abm.ppo import PPOAgent
 from abm.loop import ShapedRewardWrapper
 
-LATENT_DIM = 128
-N_ACTIONS  = 7
+LATENT_DIM  = 256
+HIDDEN_SIZE = 256
+N_ACTIONS   = 7
 IMG_H = IMG_W = 48
 
 
@@ -64,9 +65,11 @@ def record(condition: str, n_episodes: int, device: str, seed_start: int = 9999)
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
 
     # Rebuild encoder and agent
+    hidden_size = ckpt.get("hidden_size", HIDDEN_SIZE)
+
     if condition == "ppo_only":
         flat_dim = ckpt["flat_dim"]
-        agent    = PPOAgent(latent_dim=flat_dim, n_actions=N_ACTIONS).to(device)
+        agent    = PPOAgent(latent_dim=flat_dim, n_actions=N_ACTIONS, hidden=hidden_size).to(device)
         agent.load_state_dict(ckpt["agent"])
 
         def encoder(obs_dict):
@@ -78,7 +81,7 @@ def record(condition: str, n_episodes: int, device: str, seed_start: int = 9999)
         lewm  = LeWM(latent_dim=latent_dim, n_actions=N_ACTIONS).to(device)
         lewm.load_state_dict(ckpt["lewm"])
         lewm.eval()
-        agent = PPOAgent(latent_dim=latent_dim, n_actions=N_ACTIONS).to(device)
+        agent = PPOAgent(latent_dim=latent_dim, n_actions=N_ACTIONS, hidden=hidden_size).to(device)
         agent.load_state_dict(ckpt["agent"])
 
         def encoder(obs_dict):
@@ -95,16 +98,21 @@ def record(condition: str, n_episodes: int, device: str, seed_start: int = 9999)
         seed = seed_start + ep
         env  = make_record_env(video_dir, f"{condition}_ep{ep:03d}", seed=seed)
         obs, _ = env.reset(seed=seed)
-        done    = False
+        lstm_state = agent.get_initial_state(1, device)
+        done_t   = torch.zeros(1, device=device)
+        done     = False
         ep_steps = 0
         ep_ret   = 0.0
 
         while not done and ep_steps < 300:
             with torch.no_grad():
                 z = encoder(obs)
-                action, _, _, _ = agent.get_action_and_value(z)
+                action, _, _, _, lstm_state = agent.get_action_and_value(
+                    z, lstm_state, done_t
+                )
             obs, reward, term, trunc, _ = env.step(action.item())
             done      = term or trunc
+            done_t    = torch.tensor([float(done)], device=device)
             ep_ret   += reward
             ep_steps += 1
 

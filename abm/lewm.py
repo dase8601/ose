@@ -32,20 +32,24 @@ class Encoder(nn.Module):
     Output: (B, latent_dim)
 
     Architecture (verified output sizes for 48×48 input):
-      Conv(3→32, k=4, s=2)  → (B, 32, 23, 23)
-      Conv(32→64, k=4, s=2) → (B, 64, 10, 10)
-      Conv(64→64, k=3, s=1) → (B, 64,  8,  8)
-      Flatten                → (B, 4096)
-      Linear(4096, latent)   → (B, latent_dim)
+      Conv(3→32,  k=4, s=2)  → (B, 32, 23, 23)
+      Conv(32→64, k=3, s=2)  → (B, 64, 11, 11)
+      Conv(64→64, k=3, s=1)  → (B, 64,  9,  9)
+      Flatten                 → (B, 5184)
+      Linear(5184, latent)    → (B, latent_dim)
+
+    Compared to the 128-dim encoder: second conv uses k=3 instead of k=4
+    (retains more spatial resolution) and latent_dim is doubled to 256
+    for richer representation of the partial-observable scene.
     """
 
-    def __init__(self, latent_dim: int = 128, img_channels: int = 3):
+    def __init__(self, latent_dim: int = 256, img_channels: int = 3):
         super().__init__()
         self.latent_dim = latent_dim
         self.cnn = nn.Sequential(
             nn.Conv2d(img_channels, 32, kernel_size=4, stride=2),
             nn.ReLU(),
-            nn.Conv2d(32, 64, kernel_size=4, stride=2),
+            nn.Conv2d(32, 64, kernel_size=3, stride=2),
             nn.ReLU(),
             nn.Conv2d(64, 64, kernel_size=3, stride=1),
             nn.ReLU(),
@@ -126,18 +130,18 @@ class LeWM(nn.Module):
     LeWorldModel for MiniGrid.
 
     Usage (OBSERVE mode):
-        lewm = LeWM(latent_dim=128, n_actions=7).to(device)
+        lewm = LeWM(latent_dim=256, n_actions=7).to(device)
         loss, info = lewm.loss(obs_t, action_t, obs_next)
         loss.backward()
 
     Usage (ACT mode — frozen encoder):
         with torch.no_grad():
-            z = lewm.encode(obs)  # (B, 128)
+            z = lewm.encode(obs)  # (B, 256)
     """
 
     SIGREG_LAMBDA = 0.1    # weight of regularisation term
 
-    def __init__(self, latent_dim: int = 128, n_actions: int = 7):
+    def __init__(self, latent_dim: int = 256, n_actions: int = 7):
         super().__init__()
         self.latent_dim = latent_dim
         self.n_actions  = n_actions

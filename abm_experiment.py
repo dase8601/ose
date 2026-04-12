@@ -308,7 +308,7 @@ def main():
                         help="Single condition to run")
     parser.add_argument("--all",    action="store_true", help="Run all three conditions")
     parser.add_argument("--device", default="auto",       help="auto | mps | cpu | cuda")
-    parser.add_argument("--steps",  type=int, default=400_000)
+    parser.add_argument("--steps",  type=int, default=800_000)
     parser.add_argument("--seed",   type=int, default=42)
     parser.add_argument("--n-envs", type=int, default=16,  help="parallel envs (16 for GPU, 4 for CPU/MPS)")
     args = parser.parse_args()
