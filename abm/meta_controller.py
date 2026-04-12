@@ -46,11 +46,21 @@ class AutonomousSystemM:
         act_plateau_steps: int   = 20_000,
         plateau_threshold: float = 0.01,
         solve_threshold:   float = 0.80,
+        min_sr_to_stay:    float = 0.30,
     ):
+        """
+        min_sr_to_stay: don't switch back to OBSERVE unless success/score is
+        below this value.  Set lower for sparse-reward environments like
+        Crafter where scores are naturally small (e.g. 0.03).
+        Raising this from the original 0.20 stops autonomous System M from
+        interrupting a well-functioning LSTM-PPO that hasn't yet crossed a
+        high threshold but is steadily improving.
+        """
         self.obs_plateau_steps = obs_plateau_steps
         self.act_plateau_steps = act_plateau_steps
         self.plateau_threshold = plateau_threshold
         self.solve_threshold   = solve_threshold
+        self.min_sr_to_stay    = min_sr_to_stay
 
         self.mode          = Mode.OBSERVE
         self._mode_start   = 0        # env_step when mode last changed
@@ -107,9 +117,12 @@ class AutonomousSystemM:
         if len(recent) < 2:
             return self.mode
 
-        # If success rate is still low AND not improving, go back to OBSERVE
+        # Switch back to OBSERVE only if PPO is both performing poorly AND
+        # making no meaningful progress.  Using min_sr_to_stay (default 0.30)
+        # instead of the old hardcoded 0.20 prevents interrupting an LSTM-PPO
+        # that is still learning but hasn't crossed an arbitrary threshold.
         improvement = recent[-1] - recent[0]
-        if recent[-1] < 0.20 and improvement < 0.05:
+        if recent[-1] < self.min_sr_to_stay and improvement < 0.03:
             self._switch(Mode.OBSERVE, env_step)
 
         return self.mode

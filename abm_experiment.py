@@ -2,10 +2,13 @@
 abm_experiment.py — Run and compare all three A-B-M conditions.
 
 Usage:
+    # DoorKey (original)
+    python abm_experiment.py --all --device cuda
     python abm_experiment.py --condition autonomous --device mps
-    python abm_experiment.py --condition fixed      --device mps
-    python abm_experiment.py --condition ppo_only   --device mps
-    python abm_experiment.py --all                  --device mps
+
+    # Crafter (new — requires: pip install crafter)
+    python abm_experiment.py --all --device cuda --env crafter --steps 1000000
+    python abm_experiment.py --condition autonomous --device cuda --env crafter
 """
 
 import argparse
@@ -36,8 +39,21 @@ COLORS = {
 }
 LABELS = {
     "autonomous": "Autonomous System M\n(plateau-triggered)",
-    "fixed":      "Fixed-schedule System M\n(every 1000 steps)",
+    "fixed":      "Fixed-schedule System M\n(every 10K steps)",
     "ppo_only":   "PPO baseline\n(raw pixels, no LeWM)",
+}
+
+TIER_COLORS = {
+    "tier1_basic":    "#27ae60",
+    "tier2_tools":    "#2980b9",
+    "tier3_advanced": "#e67e22",
+    "tier4_hard":     "#c0392b",
+}
+TIER_LABELS = {
+    "tier1_basic":    "Tier 1 — Basic survival",
+    "tier2_tools":    "Tier 2 — First tools",
+    "tier3_advanced": "Tier 3 — Advanced crafting",
+    "tier4_hard":     "Tier 4 — Hard achievements",
 }
 
 
@@ -46,44 +62,44 @@ LABELS = {
 # ---------------------------------------------------------------------------
 
 def _smooth(x, w=5):
-    """Simple moving-average smoothing."""
     if len(x) < w:
         return x
     kernel = np.ones(w) / w
     return np.convolve(x, kernel, mode="valid")
 
 
-def plot_learning_curves(results: dict, save_dir: Path) -> Path:
-    """
-    Primary figure: episode success rate vs env steps for all conditions.
-    Vertical dotted lines mark autonomous mode switches.
-    """
+def plot_learning_curves(results: dict, save_dir: Path, env_type: str) -> Path:
+    """Success rate (DoorKey) or achievement score (Crafter) vs env steps."""
     fig, ax = plt.subplots(figsize=(10, 6))
+
+    y_label = ("Achievement Score (fraction of 22 unlocked)"
+               if env_type == "crafter" else
+               "Success Rate (50-episode eval)")
+    target  = 0.15 if env_type == "crafter" else 0.80
+    target_label = "15% score target" if env_type == "crafter" else "80% target"
+    env_name = "Crafter" if env_type == "crafter" else "MiniGrid-DoorKey-6x6"
 
     for cond, data in results.items():
         steps = data["env_steps"]
         sr    = data["success_rate"]
         if not steps:
             continue
-
         color = COLORS[cond]
-        label = LABELS[cond]
-        ax.plot(steps, sr, color=color, lw=2, label=label, alpha=0.9)
+        ax.plot(steps, sr, color=color, lw=2, label=LABELS[cond], alpha=0.9)
 
-        # Mode-switch tick marks for autonomous
         if cond == "autonomous":
             for sw in data.get("switch_log", []):
                 ax.axvline(sw["env_step"], color=color, linestyle=":", lw=0.8, alpha=0.5)
 
-    ax.axhline(0.80, color="red", linestyle="--", lw=1.2, label="80% target")
+    ax.axhline(target, color="red", linestyle="--", lw=1.2, label=target_label)
     ax.set_xlabel("Environment Steps", fontsize=11)
-    ax.set_ylabel("Success Rate (50-episode eval)", fontsize=11)
+    ax.set_ylabel(y_label, fontsize=11)
     ax.set_title(
-        "A-B-M Loop: Autonomous vs Fixed-Schedule Mode Switching\n"
-        "MiniGrid-DoorKey-6x6  |  LeWM (1.5M params) + PPO",
+        f"A-B-M Loop: Autonomous vs Fixed-Schedule Mode Switching\n"
+        f"{env_name}  |  LeWM (1.5M params) + LSTM-PPO",
         fontsize=11,
     )
-    ax.set_ylim(-0.02, 1.05)
+    ax.set_ylim(-0.02, 1.05 if env_type != "crafter" else 0.5)
     ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y:.0%}"))
     ax.legend(fontsize=9, loc="upper left")
     ax.grid(alpha=0.3)
@@ -97,7 +113,6 @@ def plot_learning_curves(results: dict, save_dir: Path) -> Path:
 
 
 def plot_ssl_loss(results: dict, save_dir: Path) -> Path:
-    """LeWM SSL loss during OBSERVE phases (autonomous + fixed)."""
     fig, ax = plt.subplots(figsize=(8, 4))
     plotted = False
 
@@ -109,7 +124,8 @@ def plot_ssl_loss(results: dict, save_dir: Path) -> Path:
         losses = data["ssl_loss_ewa"]
         if not any(l > 0 for l in losses):
             continue
-        ax.plot(steps, losses, color=COLORS[cond], lw=1.8, label=LABELS[cond].split("\n")[0])
+        ax.plot(steps, losses, color=COLORS[cond], lw=1.8,
+                label=LABELS[cond].split("\n")[0])
         plotted = True
 
     if not plotted:
@@ -131,7 +147,6 @@ def plot_ssl_loss(results: dict, save_dir: Path) -> Path:
 
 
 def plot_mode_switches(results: dict, save_dir: Path) -> Path:
-    """Timeline of mode switches for the autonomous condition."""
     data = results.get("autonomous")
     if data is None or not data.get("switch_log"):
         fig, ax = plt.subplots(figsize=(8, 2))
@@ -154,7 +169,6 @@ def plot_mode_switches(results: dict, save_dir: Path) -> Path:
         prev_step = sw["env_step"]
         current_mode = sw["to"]
 
-    # Last segment
     color = "#2ecc71" if current_mode == "OBSERVE" else "#3498db"
     ax.barh(0, max_step - prev_step, left=prev_step, height=0.6,
             color=color, alpha=0.75, edgecolor="white", linewidth=0.5)
@@ -165,8 +179,10 @@ def plot_mode_switches(results: dict, save_dir: Path) -> Path:
     ax.set_xlabel("Environment Steps", fontsize=10)
     ax.set_xlim(0, max_step)
     ax.set_yticks([])
-    ax.set_title(f"Autonomous System M — Mode Timeline  ({len(data['switch_log'])} switches)",
-                 fontsize=11)
+    ax.set_title(
+        f"Autonomous System M — Mode Timeline  ({len(data['switch_log'])} switches)",
+        fontsize=11,
+    )
     ax.grid(axis="x", alpha=0.3)
 
     fig.tight_layout()
@@ -177,28 +193,48 @@ def plot_mode_switches(results: dict, save_dir: Path) -> Path:
     return path
 
 
-def plot_comparison_bar(results: dict, save_dir: Path) -> Path:
-    """Bar chart of steps-to-80pct for each condition."""
+def plot_comparison_bar(results: dict, save_dir: Path, env_type: str) -> Path:
+    """Bar chart: steps to reach 80% (DoorKey) or peak score (Crafter)."""
     fig, ax = plt.subplots(figsize=(7, 4.5))
 
     conds = [c for c in ("autonomous", "fixed", "ppo_only") if c in results]
-    steps = []
-    for c in conds:
-        s = results[c].get("steps_to_80pct")
-        steps.append(s if s is not None else results[c]["env_steps"][-1] if results[c]["env_steps"] else 0)
+
+    if env_type == "crafter":
+        # For Crafter, bar = peak achievement score
+        vals   = [max(results[c]["success_rate"]) if results[c]["success_rate"] else 0
+                  for c in conds]
+        ylabel = "Peak Achievement Score"
+        title  = "Peak Achievement Score by Condition"
+        fmt    = lambda v: f"{v:.1%}"
+        def bar_label(v, c): return fmt(v)
+    else:
+        vals   = []
+        for c in conds:
+            s = results[c].get("steps_to_80pct")
+            vals.append(s if s is not None else
+                        (results[c]["env_steps"][-1] if results[c]["env_steps"] else 0))
+        ylabel = "Environment Steps to 80% Success Rate"
+        title  = "Sample Efficiency Comparison\n(* = 80% not reached, showing max steps)"
+        fmt    = lambda v: f"{int(v):,}"
+        def bar_label(v, c):
+            return fmt(v) if results[c].get("steps_to_80pct") else f">{fmt(v)}*"
 
     colors = [COLORS[c] for c in conds]
     labels = [LABELS[c].split("\n")[0] for c in conds]
-    bars   = ax.bar(labels, steps, color=colors, alpha=0.85, width=0.5)
+    bars   = ax.bar(labels, vals, color=colors, alpha=0.85, width=0.5)
 
-    for bar, s, c in zip(bars, steps, conds):
-        txt = f"{s:,}" if results[c].get("steps_to_80pct") else f">{s:,}*"
-        ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 500,
-                txt, ha="center", va="bottom", fontsize=11, fontweight="bold")
+    for bar, v, c in zip(bars, vals, conds):
+        ax.text(bar.get_x() + bar.get_width() / 2,
+                bar.get_height() * 1.02,
+                bar_label(v, c),
+                ha="center", va="bottom", fontsize=11, fontweight="bold")
 
-    ax.set_ylabel("Environment Steps to 80% Success Rate", fontsize=10)
-    ax.set_title("Sample Efficiency Comparison\n(* = 80% not reached, showing max steps)", fontsize=10)
-    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{int(y):,}"))
+    ax.set_ylabel(ylabel, fontsize=10)
+    ax.set_title(title, fontsize=10)
+    if env_type == "crafter":
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y:.0%}"))
+    else:
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{int(y):,}"))
     ax.grid(axis="y", alpha=0.3)
 
     fig.tight_layout()
@@ -206,6 +242,64 @@ def plot_comparison_bar(results: dict, save_dir: Path) -> Path:
     fig.savefig(path, dpi=160, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"Comparison bar → {path}")
+    return path
+
+
+def plot_crafter_tiers(results: dict, save_dir: Path) -> Path:
+    """
+    Crafter-only: per-tier achievement fraction for autonomous vs fixed.
+    This is the key figure that shows whether autonomous System M front-loads
+    OBSERVE time for harder tiers (the core Crafter hypothesis).
+    """
+    from abm.crafter_env import ACHIEVEMENT_TIERS
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=True)
+    tiers = list(ACHIEVEMENT_TIERS.keys())
+
+    for ax, cond in zip(axes, ("autonomous", "fixed")):
+        data = results.get(cond)
+        if data is None or not data.get("per_tier"):
+            ax.text(0.5, 0.5, f"No data for {cond}",
+                    ha="center", va="center", transform=ax.transAxes)
+            ax.set_title(LABELS[cond].split("\n")[0])
+            continue
+
+        # Use the final eval's per_tier dict
+        final_tier = data["per_tier"][-1] if data["per_tier"] else {}
+        vals   = [final_tier.get(t, 0) for t in tiers]
+        colors = [TIER_COLORS[t] for t in tiers]
+        labels = [TIER_LABELS[t] for t in tiers]
+
+        bars = ax.bar(range(len(tiers)), vals, color=colors, alpha=0.85, width=0.6)
+        for bar, v in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.01,
+                    f"{v:.0%}", ha="center", va="bottom", fontsize=10)
+
+        ax.set_xticks(range(len(tiers)))
+        ax.set_xticklabels([TIER_LABELS[t].split("—")[0].strip() for t in tiers],
+                           rotation=15, ha="right", fontsize=9)
+        ax.set_ylabel("Fraction of Tier Achieved", fontsize=10)
+        ax.set_ylim(0, 1.1)
+        ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: f"{y:.0%}"))
+        ax.set_title(LABELS[cond].split("\n")[0], fontsize=11, color=COLORS[cond])
+        ax.grid(axis="y", alpha=0.3)
+
+    # Legend
+    patches = [mpatches.Patch(color=TIER_COLORS[t], label=TIER_LABELS[t]) for t in tiers]
+    fig.legend(handles=patches, loc="lower center", ncol=2, fontsize=9,
+               bbox_to_anchor=(0.5, -0.05))
+
+    fig.suptitle(
+        "Crafter: Achievement Progress by Tech-Tree Tier\n"
+        "(Autonomous System M should unlock harder tiers earlier — "
+        "more OBSERVE time when world model is most useful)",
+        fontsize=10,
+    )
+    fig.tight_layout()
+    path = save_dir / "crafter_tiers.png"
+    fig.savefig(path, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"Crafter tier plot → {path}")
     return path
 
 
@@ -221,7 +315,11 @@ def _img_tag(path: Path, max_width: int = 900) -> str:
     return f'<img src="data:image/png;base64,{b64}" style="max-width:{max_width}px; margin:8px; display:block;">'
 
 
-def write_report(save_dir: Path, results: dict, plot_paths: dict) -> Path:
+def write_report(save_dir: Path, results: dict, plot_paths: dict,
+                 env_type: str) -> Path:
+    metric_col = "Steps to 15% score" if env_type == "crafter" else "Steps to 80%"
+    env_name   = "Crafter" if env_type == "crafter" else "MiniGrid-DoorKey-6x6"
+
     rows = ""
     for cond in ("autonomous", "fixed", "ppo_only"):
         d = results.get(cond)
@@ -241,11 +339,22 @@ def write_report(save_dir: Path, results: dict, plot_paths: dict) -> Path:
           <td>{t:.0f}s</td>
         </tr>"""
 
+    tier_section = ""
+    if env_type == "crafter" and "crafter_tiers" in plot_paths:
+        tier_section = f"""
+  <div class="card">
+    <h2>Figure 5 — Achievement Progress by Tech-Tree Tier</h2>
+    <p>Key test of the Crafter hypothesis: autonomous System M should allocate
+    more OBSERVE time to harder tiers, resulting in higher achievement fractions
+    for tier 3 and 4 relative to fixed-schedule.</p>
+    <figure>{_img_tag(plot_paths["crafter_tiers"], 1000)}</figure>
+  </div>"""
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>A-B-M Experiment — Autonomous vs Fixed Switching</title>
+  <title>A-B-M Experiment — {env_name}</title>
   <style>
     body   {{ font-family: Arial, sans-serif; max-width: 1100px; margin: 0 auto; padding:28px; background:#f4f6f8; color:#222; }}
     h1     {{ color:#2c3e50; }}
@@ -263,13 +372,13 @@ def write_report(save_dir: Path, results: dict, plot_paths: dict) -> Path:
   <h1>A-B-M Experiment: Autonomous vs Fixed-Schedule Mode Switching</h1>
   <p>
     Empirical test of the Dupoux/LeCun/Malik A-B-M architecture (arXiv 2603.15381)
-    on MiniGrid-DoorKey-6x6.  System A = LeWM (~1.5M params, trains from pixels).
-    System B = PPO.  System M = autonomous plateau-detect FSM vs fixed-schedule timer.
+    on <b>{env_name}</b>.  System A = LeWM (~1.5M params, trains from pixels).
+    System B = LSTM-PPO.  System M = autonomous plateau-detect FSM vs fixed-schedule timer.
   </p>
   <div class="card">
     <h2>Results Summary</h2>
     <table>
-      <tr><th>Condition</th><th>Steps to 80%</th><th>Peak success</th><th>Mode switches</th><th>Wall time</th></tr>
+      <tr><th>Condition</th><th>{metric_col}</th><th>Peak score</th><th>Mode switches</th><th>Wall time</th></tr>
       {rows}
     </table>
   </div>
@@ -286,9 +395,10 @@ def write_report(save_dir: Path, results: dict, plot_paths: dict) -> Path:
     <figure>{_img_tag(plot_paths.get("ssl_loss", save_dir/"ssl_loss_curve.png"), 800)}</figure>
   </div>
   <div class="card">
-    <h2>Figure 4 — Sample Efficiency Bar</h2>
+    <h2>Figure 4 — Performance Bar</h2>
     <figure>{_img_tag(plot_paths.get("bar", save_dir/"comparison_bar.png"), 650)}</figure>
   </div>
+  {tier_section}
 </body>
 </html>"""
 
@@ -308,12 +418,13 @@ def main():
                         help="Single condition to run")
     parser.add_argument("--all",    action="store_true", help="Run all three conditions")
     parser.add_argument("--device", default="auto",       help="auto | mps | cpu | cuda")
+    parser.add_argument("--env",    default="doorkey",    choices=["doorkey", "crafter"],
+                        help="Environment: doorkey (MiniGrid) or crafter")
     parser.add_argument("--steps",  type=int, default=800_000)
     parser.add_argument("--seed",   type=int, default=42)
-    parser.add_argument("--n-envs", type=int, default=16,  help="parallel envs (16 for GPU, 4 for CPU/MPS)")
+    parser.add_argument("--n-envs", type=int, default=16)
     args = parser.parse_args()
 
-    # Auto-detect device
     if args.device == "auto":
         import torch
         if torch.cuda.is_available():
@@ -322,9 +433,9 @@ def main():
             args.device = "mps"
         else:
             args.device = "cpu"
-    logger.info(f"Device: {args.device}")
+    logger.info(f"Device: {args.device}  |  Env: {args.env}")
 
-    save_dir = Path("results/abm")
+    save_dir = Path(f"results/{args.env}")
     save_dir.mkdir(parents=True, exist_ok=True)
 
     conditions = []
@@ -335,10 +446,8 @@ def main():
     else:
         parser.error("Specify --condition or --all")
 
-    # ── Run conditions ──────────────────────────────────────────────────────
     all_results = {}
 
-    # Load existing results so --all can be resumed
     for cond in conditions:
         json_path = save_dir / f"metrics_{cond}.json"
         if json_path.exists():
@@ -352,11 +461,12 @@ def main():
         logger.info(f"{'='*60}\n")
 
         result = run_abm_loop(
-            condition  = cond,
-            device     = args.device,
-            max_steps  = args.steps,
-            seed       = args.seed,
-            n_envs     = args.n_envs,
+            condition = cond,
+            device    = args.device,
+            max_steps = args.steps,
+            seed      = args.seed,
+            n_envs    = args.n_envs,
+            env_type  = args.env,
         )
         all_results[cond] = result
 
@@ -364,18 +474,19 @@ def main():
             json.dump(result, f, indent=2, default=str)
         logger.info(f"Saved {cond} metrics → {json_path}")
 
-    # ── Generate plots ──────────────────────────────────────────────────────
     plot_paths = {}
-    plot_paths["learning_curves"] = plot_learning_curves(all_results, save_dir)
+    plot_paths["learning_curves"] = plot_learning_curves(all_results, save_dir, args.env)
     plot_paths["ssl_loss"]        = plot_ssl_loss(all_results, save_dir)
     plot_paths["mode_switches"]   = plot_mode_switches(all_results, save_dir)
-    plot_paths["bar"]             = plot_comparison_bar(all_results, save_dir)
+    plot_paths["bar"]             = plot_comparison_bar(all_results, save_dir, args.env)
 
-    write_report(save_dir, all_results, plot_paths)
+    if args.env == "crafter":
+        plot_paths["crafter_tiers"] = plot_crafter_tiers(all_results, save_dir)
+
+    write_report(save_dir, all_results, plot_paths, args.env)
 
     logger.info(f"\nAll outputs → {save_dir}/")
 
-    # ── Print key result ────────────────────────────────────────────────────
     logger.info("\n" + "="*60)
     logger.info("RESULTS SUMMARY")
     logger.info("="*60)
