@@ -37,6 +37,7 @@ from minigrid.wrappers import RGBImgObsWrapper
 from .lewm import LeWM, ReplayBuffer
 from .ppo import PPO, PPOAgent, RolloutBuffer
 from .meta_controller import AutonomousSystemM, FixedSystemM, Mode
+from .rnd import RND
 
 logger = logging.getLogger(__name__)
 
@@ -254,20 +255,32 @@ def run_abm_loop(
     if env_type == "crafter":
         from .crafter_env import make_crafter_env, make_crafter_vec_env
         img_h = img_w = 64
-        n_actions     = 17
-        _make_env     = make_crafter_env
-        _make_vec     = make_crafter_vec_env
-        # Crafter scores are naturally small — don't trigger ACT→OBSERVE
-        # switches unless score is near zero AND flat
-        min_sr_to_stay  = 0.03
-        solve_threshold = 1.01   # never auto-stop on Crafter — run full budget
+        n_actions       = 17
+        _make_env       = make_crafter_env
+        _make_vec       = make_crafter_vec_env
+        latent_dim      = 512     # richer visual content needs more capacity
+        ppo_rollout     = 256     # 17 actions → noisier gradient, need larger batch
+        eval_interval   = 10_000  # Crafter eval is expensive
+        eval_n_eps      = 20      # 20 eps × 1K steps each
+        ssl_freeze_thr  = 0.06    # tighter threshold for richer visuals
+        min_sr_to_stay  = 0.40    # tier 1 alone gives ~27%, so 0.03 was way too low
+        solve_threshold = 1.01    # never auto-stop — run full budget
+        use_rnd         = True    # intrinsic reward for sparse Crafter signal
+        rnd_coef        = 0.1     # scale of intrinsic vs extrinsic reward
     else:  # doorkey
-        img_h = img_w = IMG_H
-        n_actions     = N_ACTIONS
-        _make_env     = make_doorkey_env
-        _make_vec     = make_doorkey_vec_env
-        min_sr_to_stay  = 0.30   # raised from 0.20 — don't cut off improving LSTM
+        img_h = img_w   = IMG_H
+        n_actions       = N_ACTIONS
+        _make_env       = make_doorkey_env
+        _make_vec       = make_doorkey_vec_env
+        latent_dim      = LATENT_DIM
+        ppo_rollout     = PPO_ROLLOUT
+        eval_interval   = EVAL_INTERVAL
+        eval_n_eps      = EVAL_EPISODES
+        ssl_freeze_thr  = 0.08
+        min_sr_to_stay  = 0.30
         solve_threshold = 0.80
+        use_rnd         = False
+        rnd_coef        = 0.0
 
     logger.info(
         f"[{condition.upper()}] Starting — env={env_type}, device={device}, "
@@ -289,7 +302,7 @@ def run_abm_loop(
         flat_dim = img_h * img_w * 3
         agent    = PPOAgent(latent_dim=flat_dim, n_actions=n_actions, hidden=HIDDEN_SIZE).to(device)
         ppo      = PPO(agent, lr=PPO_LR)
-        buf_ppo  = RolloutBuffer(PPO_ROLLOUT, n_envs, flat_dim, device, hidden_size=HIDDEN_SIZE)
+        buf_ppo  = RolloutBuffer(ppo_rollout, n_envs, flat_dim, device, hidden_size=HIDDEN_SIZE)
         lewm     = None
         opt_lewm = None
         buf_lew  = None
@@ -304,11 +317,12 @@ def run_abm_loop(
             x   = torch.from_numpy(img.astype(np.float32) / 255.0)
             return x.flatten().unsqueeze(0).to(device)
 
+        rnd_input_dim = flat_dim
     else:
-        lewm     = LeWM(latent_dim=LATENT_DIM, n_actions=n_actions, img_size=img_h).to(device)
-        agent    = PPOAgent(latent_dim=LATENT_DIM, n_actions=n_actions, hidden=HIDDEN_SIZE).to(device)
+        lewm     = LeWM(latent_dim=latent_dim, n_actions=n_actions, img_size=img_h).to(device)
+        agent    = PPOAgent(latent_dim=latent_dim, n_actions=n_actions, hidden=HIDDEN_SIZE).to(device)
         ppo      = PPO(agent, lr=PPO_LR)
-        buf_ppo  = RolloutBuffer(PPO_ROLLOUT, n_envs, LATENT_DIM, device, hidden_size=HIDDEN_SIZE)
+        buf_ppo  = RolloutBuffer(ppo_rollout, n_envs, latent_dim, device, hidden_size=HIDDEN_SIZE)
         buf_lew  = ReplayBuffer(capacity=50_000)
         opt_lewm = optim.Adam(lewm.parameters(), lr=LEWM_LR)
 
@@ -317,6 +331,15 @@ def run_abm_loop(
 
         def encoder_single(obs_dict):
             return lewm.encode(single_obs_to_tensor(obs_dict, device))
+
+        rnd_input_dim = latent_dim
+
+    # ── RND intrinsic reward (Crafter only) ─────────────────────────────────
+    rnd_module = None
+    opt_rnd    = None
+    if use_rnd:
+        rnd_module = RND(input_dim=rnd_input_dim).to(device)
+        opt_rnd    = optim.Adam(rnd_module.predictor.parameters(), lr=1e-4)
 
     # ── System M ────────────────────────────────────────────────────────────
     if condition == "autonomous":
@@ -349,7 +372,6 @@ def run_abm_loop(
     steps_to_80      = None
     env_step         = 0
     encoder_frozen   = False
-    SSL_FREEZE_THRESHOLD = 0.08
 
     ep_ret    = np.zeros(n_envs, dtype=np.float32)
     last_done = np.zeros(n_envs, dtype=bool)
@@ -358,20 +380,34 @@ def run_abm_loop(
     # ── Main loop ────────────────────────────────────────────────────────────
     while env_step < max_steps:
 
-        # Mode determination
+        # Mode determination — System M always controls switching.
+        # encoder_frozen no longer forces ACT: the encoder stays frozen (no grad)
+        # but System M can still switch to OBSERVE to collect new replay data
+        # and optionally unfreeze the encoder for retraining.
         if condition == "ppo_only":
-            current_mode = Mode.ACT
-        elif encoder_frozen:
             current_mode = Mode.ACT
         elif condition == "autonomous":
             current_mode = sysm.mode
         else:
             current_mode = sysm.step(env_step)
 
-        mode_str = "ACT(frozen)" if encoder_frozen else current_mode.name
+        mode_str = current_mode.name
+        if encoder_frozen:
+            mode_str += "(enc_frozen)"
 
         # ── OBSERVE step ─────────────────────────────────────────────────────
         if current_mode == Mode.OBSERVE:
+            # If encoder was frozen but System M switched back to OBSERVE,
+            # unfreeze it so the world model can retrain on new data
+            if encoder_frozen and lewm is not None:
+                encoder_frozen = False
+                for p in lewm.encoder.parameters():
+                    p.requires_grad_(True)
+                logger.info(
+                    f"[{condition.upper()}] Encoder unfrozen at step {env_step} "
+                    f"— System M returned to OBSERVE"
+                )
+
             actions  = envs.action_space.sample()
             obs_imgs = obs["image"].copy()
             next_obs, _, terms, truncs, infos = envs.step(actions)
@@ -404,7 +440,7 @@ def run_abm_loop(
                 sysm.observe_step(ssl_loss_val, env_step)
 
             if (not encoder_frozen and ssl_ewa is not None
-                    and ssl_ewa < SSL_FREEZE_THRESHOLD and condition != "ppo_only"):
+                    and ssl_ewa < ssl_freeze_thr and condition != "ppo_only"):
                 encoder_frozen = True
                 for p in lewm.encoder.parameters():
                     p.requires_grad_(False)
@@ -431,11 +467,18 @@ def run_abm_loop(
             ep_ret  += rewards
             env_step += n_envs
 
+            # Add RND intrinsic reward for exploration (Crafter)
+            combined_rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
+            if rnd_module is not None:
+                with torch.no_grad():
+                    intrinsic = rnd_module.reward(z.detach())
+                combined_rewards = combined_rewards + rnd_coef * intrinsic
+
             buf_ppo.add(
                 z.detach(),
                 actions,
                 log_probs,
-                torch.tensor(rewards, dtype=torch.float32, device=device),
+                combined_rewards,
                 torch.tensor(dones.astype(np.float32), device=device),
                 values,
             )
@@ -454,10 +497,22 @@ def run_abm_loop(
                 with torch.no_grad():
                     last_z   = encoder(obs)
                     last_val = agent.get_value(last_z, lstm_state, last_done_t)
+
+                # Grab RND training data before PPO update resets the buffer
+                if rnd_module is not None and opt_rnd is not None:
+                    rnd_z = buf_ppo.latents.reshape(-1, buf_ppo.latent_dim).detach().clone()
+
                 ppo.update(buf_ppo, last_val, last_done_t)
 
+                # Train RND predictor on the rollout's latents
+                if rnd_module is not None and opt_rnd is not None:
+                    rnd_loss = rnd_module.loss(rnd_z)
+                    opt_rnd.zero_grad()
+                    rnd_loss.backward()
+                    opt_rnd.step()
+
         # ── Periodic evaluation ──────────────────────────────────────────────
-        if env_step % EVAL_INTERVAL < n_envs:
+        if env_step % eval_interval < n_envs:
             if lewm is not None and not encoder_frozen:
                 for p in lewm.encoder.parameters():
                     p.requires_grad_(False)
@@ -465,11 +520,11 @@ def run_abm_loop(
             if env_type == "crafter":
                 sr, per_tier = eval_crafter(
                     agent, encoder_single, device,
-                    seed_offset=9000 + env_step, n_eps=20,  # 20 eps, capped at 1K steps each
+                    seed_offset=9000 + env_step, n_eps=eval_n_eps,
                 )
             else:
                 sr       = eval_doorkey(agent, encoder_single, device,
-                                        seed_offset=9000 + env_step, n_eps=EVAL_EPISODES)
+                                        seed_offset=9000 + env_step, n_eps=eval_n_eps)
                 per_tier = {}
 
             if lewm is not None and not encoder_frozen:
@@ -524,7 +579,7 @@ def run_abm_loop(
             "condition":  condition,
             "lewm":       lewm.state_dict(),
             "agent":      agent.state_dict(),
-            "latent_dim": LATENT_DIM,
+            "latent_dim": latent_dim,
             "hidden_size": HIDDEN_SIZE,
             "n_actions":  n_actions,
             "env_step":   env_step,
