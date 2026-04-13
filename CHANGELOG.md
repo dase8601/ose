@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-04-13 22:45 — Fix habitat-sim Python version conflict
+
+### Fixes
+- `setup_cloud.sh` — habitat-sim requires Python <=3.9, but RunPod has 3.11+. Script now creates a dedicated conda env with Python 3.9 when run with `source setup_cloud.sh habitat`. Standard DoorKey/Crafter mode unchanged.
+
+---
+
 ## 2026-04-13 22:30 — Fix setup_cloud.sh for RunPod A100
 
 ### Fixes
