@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-04-13 23:40 — Add einops dependency for V-JEPA 2.1
+
+### Fixes
+- `setup_cloud.sh` — V-JEPA 2.1 hub model requires `einops` (not listed in its own deps). Added to pip install line.
+
+---
+
 ## 2026-04-13 23:30 — Fix MiniWorld AsyncVectorEnv X crash + persistent Xvfb
 
 ### Fixes
