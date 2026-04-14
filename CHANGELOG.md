@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-04-14 00:30 — Stage 1 fix: V-JEPA max pool + L2 normalize (anti-collapse)
+
+### Problem
+V-JEPA 2.1 mean pooling over 576 patches causes feature anisotropy: cos_sim(black,white)=0.9969.
+All images map to nearly identical directions in 768-dim space → 350K steps at 0-5% success.
+
+### Fix
+- `abm/vjepa_encoder.py` — Replace `mean(dim=1)` with `max(dim=1).values` everywhere.
+  Max pool extracts the most activated patch per feature dimension instead of averaging everything flat.
+  Then L2 normalize to remove scale-based anisotropy.
+- Sanity check threshold lowered to 0.90. If still > 0.90 after this fix → Stage 2 (DINOv2).
+
+---
+
 ## 2026-04-14 00:00 — Fix V-JEPA 5D video input + weight loading
 
 ### Fixes

@@ -126,7 +126,8 @@ class VJEPAEncoder:
             all_inputs = torch.cat([black, white, noise1, noise2], dim=0)
             feat = self.encoder(all_inputs)
             if feat.ndim == 3:
-                feat = feat.mean(dim=1)  # (4, 768)
+                feat = feat.max(dim=1).values  # (4, 768)
+            feat = F.normalize(feat, p=2, dim=-1)
             bw_sim = F.cosine_similarity(feat[0:1], feat[1:2]).item()
             noise_sim = F.cosine_similarity(feat[2:3], feat[3:4]).item()
             feat_std = feat.std().item()
@@ -134,9 +135,11 @@ class VJEPAEncoder:
             print(f"  Feature sanity: dim={self.feature_dim}")
             print(f"    overall_std={feat_std:.4f}, cross_sample_std={per_sample_std:.4f}")
             print(f"    cos_sim(black,white)={bw_sim:.4f}, cos_sim(noise1,noise2)={noise_sim:.4f}")
-            if bw_sim > 0.99:
-                print("  WARNING: Black and white images produce nearly identical features!")
-                print("  The encoder may not be discriminative for RL.")
+            if bw_sim > 0.90:
+                print("  WARNING: cos_sim(black,white) > 0.90 — features not discriminative enough for RL!")
+                print("  Consider switching to DINOv2 (Stage 2).")
+            else:
+                print("  Features look discriminative — good to train.")
 
     def _preprocess(self, imgs: torch.Tensor) -> torch.Tensor:
         """
@@ -179,8 +182,8 @@ class VJEPAEncoder:
         x = self._preprocess(x)
         out = self.encoder(x)
         if out.ndim == 3:
-            return out.mean(dim=1)  # avg pool over patches → (B, D)
-        return out
+            out = out.max(dim=1).values  # max pool over patches → (B, D)
+        return F.normalize(out, p=2, dim=-1)
 
     @torch.no_grad()
     def encode_single(self, obs_dict: dict) -> torch.Tensor:
@@ -201,5 +204,5 @@ class VJEPAEncoder:
         x = self._preprocess(imgs)
         out = self.encoder(x)
         if out.ndim == 3:
-            return out.mean(dim=1)
-        return out
+            out = out.max(dim=1).values  # max pool over patches → (B, D)
+        return F.normalize(out, p=2, dim=-1)
