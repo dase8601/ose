@@ -16,12 +16,32 @@ is significantly higher than Crafter's 2D sprites, making it a better test
 for whether V-JEPA abstract representations outperform raw pixels.
 """
 
+import io
+import os
+import sys
+import contextlib
+import logging
 import numpy as np
 
 try:
     import gymnasium
 except ImportError:
     import gym as gymnasium
+
+# Suppress MiniWorld/pyglet noisy OpenGL messages
+logging.getLogger("miniworld").setLevel(logging.ERROR)
+logging.getLogger("pyglet").setLevel(logging.ERROR)
+
+
+@contextlib.contextmanager
+def _suppress_stdout():
+    """Temporarily suppress stdout to hide pyglet's 'Falling back to num_samples' spam."""
+    old = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        yield
+    finally:
+        sys.stdout = old
 
 
 class MiniWorldNavEnv(gymnasium.Env):
@@ -52,13 +72,14 @@ class MiniWorldNavEnv(gymnasium.Env):
         self._seed = seed
         self._img_size = img_size
 
-        # MiniWorld uses view parameter for render resolution
-        self._env = gymnasium.make(
-            env_id,
-            render_mode="rgb_array",
-            view="agent",
-            max_episode_steps=max_steps,
-        )
+        # MiniWorld/pyglet prints "Falling back to num_samples=4" on every env creation
+        with _suppress_stdout():
+            self._env = gymnasium.make(
+                env_id,
+                render_mode="rgb_array",
+                view="agent",
+                max_episode_steps=max_steps,
+            )
 
         self.observation_space = gymnasium.spaces.Dict({
             "image": gymnasium.spaces.Box(
