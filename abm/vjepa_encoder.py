@@ -74,7 +74,24 @@ class VJEPAEncoder:
         for k, v in enc_sd.items():
             k = k.replace("module.", "").replace("backbone.", "")
             cleaned[k] = v
-        self.encoder.load_state_dict(cleaned, strict=False)
+
+        # Log weight loading diagnostics
+        model_keys = set(self.encoder.state_dict().keys())
+        ckpt_keys = set(cleaned.keys())
+        matched = model_keys & ckpt_keys
+        missing = model_keys - ckpt_keys
+        unexpected = ckpt_keys - model_keys
+        print(f"V-JEPA weight loading: {len(matched)}/{len(model_keys)} keys matched")
+        if missing:
+            print(f"  MISSING from checkpoint ({len(missing)}): {list(missing)[:5]}...")
+        if unexpected:
+            print(f"  UNEXPECTED in checkpoint ({len(unexpected)}): {list(unexpected)[:5]}...")
+
+        result = self.encoder.load_state_dict(cleaned, strict=False)
+        if result.missing_keys:
+            print(f"  WARNING: {len(result.missing_keys)} missing keys — encoder may have random weights!")
+        if not result.missing_keys and not result.unexpected_keys:
+            print("  All weights loaded successfully.")
 
         self.encoder = self.encoder.to(device).eval()
 
@@ -99,6 +116,18 @@ class VJEPAEncoder:
                 # (B, embed_dim) — already pooled
                 self.feature_dim = out.shape[-1]
                 self.num_patches = 1
+
+            # Sanity check: random noise input should produce varied features
+            noise = torch.randn(2, 3, 1, img_size, img_size, device=device)
+            feat = self.encoder(noise)
+            if feat.ndim == 3:
+                feat = feat.mean(dim=1)
+            cos_sim = F.cosine_similarity(feat[0:1], feat[1:2]).item()
+            feat_std = feat.std().item()
+            print(f"  Feature sanity: dim={self.feature_dim}, std={feat_std:.4f}, "
+                  f"cos_sim(2 random inputs)={cos_sim:.4f}")
+            if feat_std < 0.001:
+                print("  WARNING: Near-zero feature variance — weights likely not loaded!")
 
     def _preprocess(self, imgs: torch.Tensor) -> torch.Tensor:
         """
