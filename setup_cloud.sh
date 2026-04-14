@@ -35,7 +35,7 @@ echo "=== Installing core dependencies ==="
 pip install minigrid gymnasium numpy matplotlib crafter -q
 
 echo "=== Installing MiniWorld + V-JEPA dependencies ==="
-pip install miniworld omegaconf timm Pillow einops -q
+pip install miniworld omegaconf timm Pillow einops transformers -q
 
 echo "=== Verifying ==="
 python -c "

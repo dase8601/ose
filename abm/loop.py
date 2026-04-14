@@ -391,7 +391,7 @@ def run_abm_loop(
 
         vjepa_enc = VJEPAEncoder(device=device)
         feat_dim  = vjepa_enc.feature_dim   # 768 for ViT-B
-        logger.info(f"[{condition.upper()}] DINOv2 ViT-B/14 loaded — feature_dim={feat_dim}")
+        logger.info(f"[{condition.upper()}] DINOv3 ViT-B/16 loaded — feature_dim={feat_dim}")
 
         agent   = PPOAgent(latent_dim=feat_dim, n_actions=n_actions, hidden=HIDDEN_SIZE).to(device)
         ppo     = PPO(agent, lr=PPO_LR)

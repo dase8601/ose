@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-04-14 01:30 — Upgrade DINOv2 → DINOv3 ViT-B/16
+
+### Why
+DINOv3 is Meta's strongest universal vision backbone: 6x larger training run,
+1.7B images (LVD-1689M), first SSL model to outperform weakly-supervised models.
+ViT-B/16 has same 86M params and 768-dim output — zero changes to predictor/loop.
+Loaded via HuggingFace transformers (pooler_output = CLS token).
+
+### Changes
+- `abm/vjepa_encoder.py` — Rewrite to use DINOv3 via transformers AutoModel.
+- `setup_cloud.sh` — Add `transformers` to pip install line.
+- `abm/loop.py` — Update log message.
+
+---
+
 ## 2026-04-14 01:00 — Stage 2: Replace V-JEPA with DINOv2 ViT-B/14
 
 ### Why
