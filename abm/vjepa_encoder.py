@@ -1,174 +1,122 @@
 """
-abm/vjepa_encoder.py — V-JEPA 2.1 frozen encoder for the A-B-M loop.
+abm/vjepa_encoder.py — DINOv2 ViT-B/14 frozen encoder for the A-B-M loop.
 
-Loads V-JEPA 2.1 ViT-B (80M params, distilled from ViT-G 2B) as System A's
-perception backbone.  The encoder is permanently frozen — it was pretrained
-on massive video data (Ego4D, SSv2, YT-1B, LVD-142M images), representing
-"years of passive observation" in LeCun's framework.
+DINOv2 is a JEPA-class encoder: self-supervised, no pixel reconstruction,
+trained on massive passive observation (1.2B images). Yann LeCun explicitly
+calls DINOv2 "probably the best image encoder that we have at the moment"
+and identifies it as a joint embedding method — the same class as V-JEPA.
 
-What trains during OBSERVE is the action-conditioned predictor (in lewm.py),
-not this encoder.
+Why DINOv2 instead of V-JEPA 2.1:
+    V-JEPA 2.1 in single-frame (T=1) mode produces collapsed features:
+    cos_sim(black_image, white_image) = 0.9969 regardless of pooling strategy.
+    The feature anisotropy is fundamental to its image-mode representation.
+    DINOv2 uses self-distillation with local/global crops, producing a CLS
+    token explicitly trained for discriminative single-image encoding.
+
+Output: 768-dim (identical to V-JEPA ViT-B) — zero changes to VJEPAPredictor.
 
 Usage:
     encoder = VJEPAEncoder(device="cuda")
-    z = encoder.encode(obs_rgb)          # (B, 768)
-    z = encoder.encode_single(obs_rgb)   # (1, 768)
+    z = encoder.encode(obs_dict)         # (B, 768)
+    z = encoder.encode_single(obs_dict)  # (1, 768)
 
 Input:  (B, H, W, 3) uint8 RGB or (B, 3, H, W) float32 [0, 1]
-Output: (B, 768) float32 — avg-pooled patch features
+Output: (B, 768) float32 — DINOv2 CLS token (L2 normalized)
 """
 
-import os
 import torch
-import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
 
-# Correct public URL — the torch.hub copy may have a broken localhost URL
-VJEPA_WEIGHTS_URL = "https://dl.fbaipublicfiles.com/vjepa2/vjepa2_1_vitb_dist_vitG_384.pt"
-
-
 class VJEPAEncoder:
     """
-    Frozen V-JEPA 2.1 ViT-B encoder.
+    Frozen DINOv2 ViT-B/14 encoder (drop-in replacement for V-JEPA).
 
-    Loads the distilled ViT-B model (80M params) via torch.hub.
-    Input images are resized to 384x384 and normalized.
-    Output is average-pooled patch features: (B, 768).
+    Loads DINOv2 ViT-B/14 (86M params) via torch.hub.
+    Input images are resized to 224x224 and normalized.
+    Output is the L2-normalized CLS token: (B, 768).
     """
 
-    # ImageNet normalization (V-JEPA uses same as ViT/DINOv2)
+    # ImageNet normalization (same as V-JEPA — both use standard ImageNet stats)
     MEAN = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1)
     STD  = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1)
 
     def __init__(
         self,
         device: str = "cuda",
-        model_name: str = "vjepa2_1_vit_base_384",
-        img_size: int = 384,
+        img_size: int = 224,
     ):
         self.device   = device
         self.img_size = img_size
 
-        # Load V-JEPA 2.1 ViT-B architecture (no weights)
-        # Then load weights from the correct public URL ourselves,
-        # because the hub repo's URL sometimes points to localhost (Meta internal).
-        self.encoder, _ = torch.hub.load(
-            "facebookresearch/vjepa2:main",
-            model_name,
-            pretrained=False,  # don't let hub download weights
+        # Load DINOv2 ViT-B/14 — discriminative JEPA-class encoder
+        # Yann LeCun (AI Alliance 2026): "probably the best image encoder we have"
+        print("Loading DINOv2 ViT-B/14 (JEPA-class frozen encoder)...")
+        self.encoder = torch.hub.load(
+            "facebookresearch/dinov2",
+            "dinov2_vitb14",
+            pretrained=True,
         )
-
-        # Download weights from the correct public URL
-        cache_dir = torch.hub.get_dir()
-        os.makedirs(os.path.join(cache_dir, "checkpoints"), exist_ok=True)
-        ckpt_path = os.path.join(cache_dir, "checkpoints", "vjepa2_1_vitb_dist_vitG_384.pt")
-        if not os.path.exists(ckpt_path):
-            print(f"Downloading V-JEPA 2.1 weights from {VJEPA_WEIGHTS_URL}")
-            torch.hub.download_url_to_file(VJEPA_WEIGHTS_URL, ckpt_path)
-        state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=False)
-        # Extract encoder weights and clean keys (same as hub's _clean_backbone_key)
-        enc_sd = state_dict["ema_encoder"]
-        cleaned = {}
-        for k, v in enc_sd.items():
-            k = k.replace("module.", "").replace("backbone.", "")
-            cleaned[k] = v
-
-        # Log weight loading diagnostics
-        model_keys = set(self.encoder.state_dict().keys())
-        ckpt_keys = set(cleaned.keys())
-        matched = model_keys & ckpt_keys
-        missing = model_keys - ckpt_keys
-        unexpected = ckpt_keys - model_keys
-        print(f"V-JEPA weight loading: {len(matched)}/{len(model_keys)} keys matched")
-        if missing:
-            print(f"  MISSING from checkpoint ({len(missing)}): {list(missing)[:5]}...")
-        if unexpected:
-            print(f"  UNEXPECTED in checkpoint ({len(unexpected)}): {list(unexpected)[:5]}...")
-
-        result = self.encoder.load_state_dict(cleaned, strict=False)
-        if result.missing_keys:
-            print(f"  WARNING: {len(result.missing_keys)} missing keys — encoder may have random weights!")
-        if not result.missing_keys and not result.unexpected_keys:
-            print("  All weights loaded successfully.")
-
         self.encoder = self.encoder.to(device).eval()
 
         # Freeze all parameters — never trains
         for p in self.encoder.parameters():
             p.requires_grad_(False)
 
+        self.feature_dim = 768  # DINOv2 ViT-B CLS token dim
+
         # Cache normalization tensors on device
         self._mean = self.MEAN.to(device)
         self._std  = self.STD.to(device)
 
-        # Determine feature dimension by dry run
-        # V-JEPA expects 5D video input: (B, C, T, H, W) — use T=1 for single frames
+        # Sanity check: different images should produce different features
         with torch.no_grad():
-            dummy = torch.zeros(1, 3, 1, img_size, img_size, device=device)
-            out = self.encoder(dummy)
-            if out.ndim == 3:
-                # (B, num_patches, embed_dim)
-                self.feature_dim = out.shape[-1]
-                self.num_patches = out.shape[1]
-            else:
-                # (B, embed_dim) — already pooled
-                self.feature_dim = out.shape[-1]
-                self.num_patches = 1
-
-            # Sanity check: different inputs should produce different features
-            # Test with both random noise AND structured images (black vs white)
-            black = torch.zeros(1, 3, 1, img_size, img_size, device=device)
-            white = torch.ones(1, 3, 1, img_size, img_size, device=device)
-            noise1 = torch.randn(1, 3, 1, img_size, img_size, device=device)
-            noise2 = torch.randn(1, 3, 1, img_size, img_size, device=device)
+            black = torch.zeros(1, 3, img_size, img_size, device=device)
+            white = torch.ones(1, 3, img_size, img_size, device=device)
+            noise1 = torch.randn(1, 3, img_size, img_size, device=device).clamp(0, 1)
+            noise2 = torch.randn(1, 3, img_size, img_size, device=device).clamp(0, 1)
             all_inputs = torch.cat([black, white, noise1, noise2], dim=0)
-            feat = self.encoder(all_inputs)
-            if feat.ndim == 3:
-                feat = feat.max(dim=1).values  # (4, 768)
+            all_inputs = (all_inputs - self._mean) / self._std
+            feat = self.encoder.forward_features(all_inputs)["x_norm_clstoken"]
             feat = F.normalize(feat, p=2, dim=-1)
-            bw_sim = F.cosine_similarity(feat[0:1], feat[1:2]).item()
-            noise_sim = F.cosine_similarity(feat[2:3], feat[3:4]).item()
+            bw_sim   = F.cosine_similarity(feat[0:1], feat[1:2]).item()
+            n_sim    = F.cosine_similarity(feat[2:3], feat[3:4]).item()
             feat_std = feat.std().item()
-            per_sample_std = feat.std(dim=0).mean().item()
-            print(f"  Feature sanity: dim={self.feature_dim}")
-            print(f"    overall_std={feat_std:.4f}, cross_sample_std={per_sample_std:.4f}")
-            print(f"    cos_sim(black,white)={bw_sim:.4f}, cos_sim(noise1,noise2)={noise_sim:.4f}")
+            print(f"  DINOv2 loaded — feature_dim={self.feature_dim}")
+            print(f"  Feature sanity: overall_std={feat_std:.4f}")
+            print(f"    cos_sim(black,white)={bw_sim:.4f}, cos_sim(noise1,noise2)={n_sim:.4f}")
             if bw_sim > 0.90:
-                print("  WARNING: cos_sim(black,white) > 0.90 — features not discriminative enough for RL!")
-                print("  Consider switching to DINOv2 (Stage 2).")
+                print("  WARNING: cos_sim still high — unexpected for DINOv2!")
             else:
-                print("  Features look discriminative — good to train.")
+                print("  Features are discriminative — good to train.")
 
     def _preprocess(self, imgs: torch.Tensor) -> torch.Tensor:
         """
-        Resize to 384x384, normalize, and add temporal dim for V-JEPA.
+        Resize to 224x224 and normalize.
         Input: (B, 3, H, W) float32 [0, 1]
-        Output: (B, 3, 1, 384, 384) float32 normalized — T=1 for single frames
+        Output: (B, 3, 224, 224) float32 normalized
         """
         if imgs.shape[-2:] != (self.img_size, self.img_size):
             imgs = F.interpolate(
                 imgs, size=(self.img_size, self.img_size),
                 mode="bilinear", align_corners=False,
             )
-        imgs = (imgs - self._mean) / self._std
-        # Add temporal dimension: (B, C, H, W) → (B, C, 1, H, W)
-        return imgs.unsqueeze(2)
+        return (imgs - self._mean) / self._std
 
     def _obs_to_tensor(self, obs_dict: dict) -> torch.Tensor:
         """
         Convert observation dict to (B, 3, H, W) float32 tensor.
         Handles both batch (N, H, W, C) and single (H, W, C) observations.
         """
-        imgs = obs_dict.get("rgb", obs_dict.get("image"))  # support both keys
+        imgs = obs_dict.get("rgb", obs_dict.get("image"))
         if isinstance(imgs, np.ndarray):
             if imgs.ndim == 3:
                 imgs = imgs[np.newaxis]  # (H, W, C) → (1, H, W, C)
             x = torch.from_numpy(imgs.astype(np.float32) / 255.0)
             x = x.permute(0, 3, 1, 2)  # (B, C, H, W)
         else:
-            x = imgs  # already a tensor
+            x = imgs
         return x.to(self.device)
 
     @torch.no_grad()
@@ -176,13 +124,11 @@ class VJEPAEncoder:
         """
         Encode a batch of observations.
         obs_dict: {"rgb": (B, H, W, 3) uint8}
-        Returns: (B, 768) avg-pooled features
+        Returns: (B, 768) L2-normalized CLS token
         """
         x = self._obs_to_tensor(obs_dict)
         x = self._preprocess(x)
-        out = self.encoder(x)
-        if out.ndim == 3:
-            out = out.max(dim=1).values  # max pool over patches → (B, D)
+        out = self.encoder.forward_features(x)["x_norm_clstoken"]  # (B, 768)
         return F.normalize(out, p=2, dim=-1)
 
     @torch.no_grad()
@@ -202,7 +148,5 @@ class VJEPAEncoder:
         Returns: (B, 768)
         """
         x = self._preprocess(imgs)
-        out = self.encoder(x)
-        if out.ndim == 3:
-            out = out.max(dim=1).values  # max pool over patches → (B, D)
+        out = self.encoder.forward_features(x)["x_norm_clstoken"]
         return F.normalize(out, p=2, dim=-1)

@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-04-14 01:00 — Stage 2: Replace V-JEPA with DINOv2 ViT-B/14
+
+### Why
+Stage 1 (max pool + L2 normalize) did not fix feature collapse: cos_sim(black,white)
+remained 0.9969. The anisotropy is fundamental to V-JEPA's single-frame image mode.
+
+### Fix
+- `abm/vjepa_encoder.py` — Complete rewrite. Use DINOv2 ViT-B/14 (86M params) via
+  torch.hub. Input resized to 224x224, output is L2-normalized CLS token (768-dim).
+  DINOv2 is a JEPA-class encoder — Yann LeCun: "probably the best image encoder we have."
+  Zero changes to VJEPAPredictor or training loop (same 768-dim output).
+- `abm/loop.py` — Update log message to reflect DINOv2.
+
+### Thesis alignment
+DINOv2 satisfies the JEPA requirement: self-supervised, no pixel reconstruction,
+trained on massive passive observation (1.2B images). Per Yann's AI Alliance talk,
+it is explicitly a joint embedding method — the same architectural class as V-JEPA.
+
+---
+
 ## 2026-04-14 00:30 — Stage 1 fix: V-JEPA max pool + L2 normalize (anti-collapse)
 
 ### Problem
