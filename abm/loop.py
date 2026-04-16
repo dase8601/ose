@@ -270,6 +270,64 @@ def eval_miniworld(
 
 
 # ---------------------------------------------------------------------------
+# MiniWorld MPC evaluation (Paper 3 — DINO-WM style, no RL)
+# ---------------------------------------------------------------------------
+
+def eval_miniworld_mpc(
+    mpc,
+    encoder_fn:  Callable,
+    vjepa_enc,
+    goal_buf,
+    device:      str,
+    seed_offset: int = 1000,
+    n_eps:       int = 20,
+) -> float:
+    """
+    Evaluate MPC planner on MiniWorld maze navigation.
+
+    If mpc or goal_buf is empty, falls back to random actions.
+    Returns: success_rate (fraction of episodes reaching the goal)
+    """
+    from .miniworld_env import make_miniworld_env
+
+    z_goal = goal_buf.get_goal() if goal_buf is not None else None  # (1, 768) or None
+
+    successes = 0
+    for ep in range(n_eps):
+        env = make_miniworld_env(seed=seed_offset + ep)
+        obs, _ = env.reset(seed=seed_offset + ep)
+        done     = False
+        ep_steps = 0
+        ep_ret   = 0.0
+
+        while not done and ep_steps < 500:
+            with torch.no_grad():
+                z = encoder_fn(obs)   # (1, 768)
+
+            if mpc is not None and z_goal is not None:
+                action = mpc.plan_single(z, z_goal)
+            else:
+                action = env.action_space.sample()
+
+            obs, r, term, trunc, info = env.step(action)
+            done      = term or trunc
+            ep_ret   += r
+            ep_steps += 1
+
+            # Passively update goal buffer from successful eval episodes
+            if r > 0 and goal_buf is not None:
+                with torch.no_grad():
+                    z_g = vjepa_enc.encode_single({"rgb": obs["rgb"][None]})
+                goal_buf.push(z_g)
+
+        if ep_ret > 0:
+            successes += 1
+        env.close()
+
+    return successes / n_eps
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -286,7 +344,7 @@ def run_abm_loop(
 
     Parameters
     ----------
-    condition : "autonomous" | "fixed" | "ppo_only"
+    condition : "autonomous" | "fixed" | "ppo_only" | "mpc_only" | "random"
     device    : "cuda" | "mps" | "cpu"
     max_steps : total environment steps
     seed      : random seed
@@ -393,9 +451,13 @@ def run_abm_loop(
         feat_dim  = vjepa_enc.feature_dim   # 768 for ViT-B
         logger.info(f"[{condition.upper()}] DINOv2 ViT-B/14 loaded — feature_dim={feat_dim}")
 
-        agent   = PPOAgent(latent_dim=feat_dim, n_actions=n_actions, hidden=HIDDEN_SIZE).to(device)
-        ppo     = PPO(agent, lr=PPO_LR)
-        buf_ppo = RolloutBuffer(ppo_rollout, n_envs, feat_dim, device, hidden_size=HIDDEN_SIZE)
+        # MPC planner replaces PPO for miniworld (Yann: abandon RL → MPC)
+        from .mpc import RandomShootingMPC, GoalBuffer
+        mpc        = None   # initialized after predictor is ready
+        goal_buf   = GoalBuffer(max_size=100, device=device)
+        agent      = None   # no PPO agent in miniworld MPC path
+        ppo        = None
+        buf_ppo    = None
 
         # V-JEPA encoder handles both "rgb" and "image" keys
         obs_key = "rgb"
@@ -406,12 +468,12 @@ def run_abm_loop(
         def encoder_single(obs_dict):
             return vjepa_enc.encode_single(obs_dict)
 
-        if condition != "ppo_only":
+        if condition != "mpc_only":
             # Action-conditioned predictor (trains during OBSERVE)
             vjepa_pred = VJEPAPredictor(
                 feature_dim=feat_dim, n_actions=n_actions
             ).to(device)
-            opt_pred = optim.Adam(vjepa_pred.parameters(), lr=3e-4)
+            opt_pred  = optim.Adam(vjepa_pred.parameters(), lr=3e-4)
             buf_vjepa = VJEPAReplayBuffer(capacity=50_000, feature_dim=feat_dim)
 
         # LeWM not used in V-JEPA path
@@ -495,7 +557,7 @@ def run_abm_loop(
         "per_tier":     [],    # Crafter only — tier achievement fractions
     }
     ssl_ewa          = None
-    mode_str         = "OBSERVE" if condition != "ppo_only" else "ACT"
+    mode_str         = "ACT" if condition in ("ppo_only", "mpc_only", "random") else "OBSERVE"
     steps_to_80      = None
     env_step         = 0
     encoder_frozen   = False
@@ -513,7 +575,7 @@ def run_abm_loop(
         # encoder_frozen no longer forces ACT: the encoder stays frozen (no grad)
         # but System M can still switch to OBSERVE to collect new replay data
         # and optionally unfreeze the encoder for retraining.
-        if condition == "ppo_only":
+        if condition in ("ppo_only", "mpc_only", "random"):
             current_mode = Mode.ACT
         elif condition == "autonomous":
             current_mode = sysm.mode
@@ -535,7 +597,18 @@ def run_abm_loop(
                 with torch.no_grad():
                     z_t = encoder(obs)
 
-                next_obs, _, terms, truncs, infos = envs.step(actions_np)
+                next_obs, rewards_obs, terms, truncs, infos = envs.step(actions_np)
+
+                # Passively collect goal encodings — any accidental goal reach
+                # during random exploration provides z_goal for MPC planning
+                if use_vjepa:
+                    for i in range(n_envs):
+                        if rewards_obs[i] > 0:
+                            with torch.no_grad():
+                                z_g = vjepa_enc.encode_single(
+                                    {"rgb": next_obs["rgb"][i : i + 1]}
+                                )
+                            goal_buf.push(z_g)
 
                 with torch.no_grad():
                     z_next = encoder(next_obs)
@@ -566,6 +639,15 @@ def run_abm_loop(
 
                 if condition == "autonomous" and ssl_loss_val is not None:
                     sysm.observe_step(ssl_loss_val, env_step)
+
+                # Initialize MPC planner once predictor is warm
+                if use_vjepa and mpc is None and vjepa_pred is not None and len(buf_vjepa) >= LEWM_WARMUP:
+                    from .mpc import RandomShootingMPC
+                    mpc = RandomShootingMPC(
+                        vjepa_pred, n_actions=n_actions,
+                        horizon=7, n_samples=256, device=device,
+                    )
+                    logger.info(f"[{condition.upper()}] MPC planner ready (horizon=7, samples=256)")
 
             else:
                 # LeWM CNN path (doorkey / crafter)
@@ -612,7 +694,8 @@ def run_abm_loop(
                     sysm.observe_step(ssl_loss_val, env_step)
 
                 if (not encoder_frozen and ssl_ewa is not None
-                        and ssl_ewa < ssl_freeze_thr and condition != "ppo_only"):
+                        and ssl_ewa < ssl_freeze_thr
+                        and condition not in ("ppo_only", "mpc_only", "random")):
                     encoder_frozen = True
                     for p in lewm.encoder.parameters():
                         p.requires_grad_(False)
@@ -623,73 +706,109 @@ def run_abm_loop(
 
         # ── ACT step ─────────────────────────────────────────────────────────
         else:
-            done_t = torch.tensor(last_done.astype(np.float32), device=device)
+            if use_vjepa:
+                # ── MPC planning (miniworld) — no RL, no policy gradient ──────
+                # Per Yann LeCun: "abandon RL in favor of model-predictive control"
+                if condition == "random":
+                    # Pure random baseline — no encoding, no planning
+                    actions_np = envs.action_space.sample()
+                    z          = None
+                else:
+                    with torch.no_grad():
+                        z = encoder(obs)   # (N_ENVS, 768)
 
-            if buf_ppo._ptr == 0:
-                buf_ppo.set_lstm_initial_state(*lstm_state)
+                    z_goal = goal_buf.get_goal()   # (1, 768) or None
 
-            with torch.no_grad():
-                z = encoder(obs)
-                actions, log_probs, _, values, lstm_state = agent.get_action_and_value(
-                    z, lstm_state, done_t
+                    if mpc is not None and z_goal is not None:
+                        z_goal_batch = z_goal.expand(n_envs, -1)
+                        actions_np   = mpc.plan_batch(z, z_goal_batch)
+                    else:
+                        # No goal yet or predictor not warm — explore randomly
+                        actions_np = envs.action_space.sample()
+
+                next_obs, rewards, terms, truncs, _ = envs.step(actions_np)
+                dones     = terms | truncs
+                ep_ret   += rewards
+                env_step += n_envs
+                act_steps += n_envs
+
+                # Collect goal encodings from successful plan executions
+                for i in range(n_envs):
+                    if rewards[i] > 0:
+                        with torch.no_grad():
+                            z_g = vjepa_enc.encode_single(
+                                {"rgb": next_obs["rgb"][i : i + 1]}
+                            )
+                        goal_buf.push(z_g)
+
+                for i in range(n_envs):
+                    if dones[i]:
+                        if condition == "autonomous":
+                            sysm.act_step(float(ep_ret[i]), None, env_step)
+                        ep_ret[i] = 0.0
+
+                last_done = dones
+                obs       = next_obs
+
+            else:
+                # ── PPO (doorkey / crafter) ───────────────────────────────────
+                done_t = torch.tensor(last_done.astype(np.float32), device=device)
+
+                if buf_ppo._ptr == 0:
+                    buf_ppo.set_lstm_initial_state(*lstm_state)
+
+                with torch.no_grad():
+                    z = encoder(obs)
+                    actions, log_probs, _, values, lstm_state = agent.get_action_and_value(
+                        z, lstm_state, done_t
+                    )
+
+                next_obs, rewards, terms, truncs, _ = envs.step(actions.cpu().numpy())
+                dones     = terms | truncs
+                ep_ret   += rewards
+                env_step += n_envs
+                act_steps += n_envs
+
+                combined_rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
+                if rnd_module is not None:
+                    with torch.no_grad():
+                        intrinsic = rnd_module.reward(z.detach())
+                    combined_rewards = combined_rewards + rnd_coef * intrinsic
+
+                buf_ppo.add(
+                    z.detach(),
+                    actions,
+                    log_probs,
+                    combined_rewards,
+                    torch.tensor(dones.astype(np.float32), device=device),
+                    values,
                 )
 
-            next_obs, rewards, terms, truncs, _ = envs.step(actions.cpu().numpy())
-            dones     = terms | truncs
-            ep_ret   += rewards
-            env_step += n_envs
-            act_steps += n_envs
+                for i in range(n_envs):
+                    if dones[i]:
+                        if condition == "autonomous":
+                            sysm.act_step(float(ep_ret[i]), None, env_step)
+                        ep_ret[i] = 0.0
 
-            # Intrinsic reward: predictor error (habitat) or RND (crafter)
-            combined_rewards = torch.tensor(rewards, dtype=torch.float32, device=device)
-            if vjepa_pred is not None and use_vjepa:
-                with torch.no_grad():
-                    z_next = encoder(next_obs)
-                    intrinsic = vjepa_pred.intrinsic_reward(
-                        z.detach(), actions, z_next.detach()
-                    )
-                combined_rewards = combined_rewards + intrinsic_coef * intrinsic
-            elif rnd_module is not None:
-                with torch.no_grad():
-                    intrinsic = rnd_module.reward(z.detach())
-                combined_rewards = combined_rewards + rnd_coef * intrinsic
+                last_done = dones
+                obs       = next_obs
 
-            buf_ppo.add(
-                z.detach(),
-                actions,
-                log_probs,
-                combined_rewards,
-                torch.tensor(dones.astype(np.float32), device=device),
-                values,
-            )
+                if buf_ppo.is_full:
+                    last_done_t = torch.tensor(last_done.astype(np.float32), device=device)
+                    with torch.no_grad():
+                        last_z   = encoder(obs)
+                        last_val = agent.get_value(last_z, lstm_state, last_done_t)
 
-            for i in range(n_envs):
-                if dones[i]:
-                    if condition == "autonomous":
-                        sysm.act_step(float(ep_ret[i]), None, env_step)
-                    ep_ret[i] = 0.0
+                    if rnd_module is not None and opt_rnd is not None:
+                        rnd_z = buf_ppo.latents.reshape(-1, buf_ppo.latent_dim).detach().clone()
 
-            last_done = dones
-            obs       = next_obs
+                    ppo.update(buf_ppo, last_val, last_done_t)
 
-            if buf_ppo.is_full:
-                last_done_t = torch.tensor(last_done.astype(np.float32), device=device)
-                with torch.no_grad():
-                    last_z   = encoder(obs)
-                    last_val = agent.get_value(last_z, lstm_state, last_done_t)
-
-                # Grab RND training data before PPO update resets the buffer
-                if rnd_module is not None and opt_rnd is not None:
-                    rnd_z = buf_ppo.latents.reshape(-1, buf_ppo.latent_dim).detach().clone()
-
-                ppo.update(buf_ppo, last_val, last_done_t)
-
-                # Train RND predictor on the rollout's latents
-                if rnd_module is not None and opt_rnd is not None:
-                    rnd_loss = rnd_module.loss(rnd_z)
-                    opt_rnd.zero_grad()
-                    rnd_loss.backward()
-                    opt_rnd.step()
+                    if rnd_module is not None and opt_rnd is not None:
+                        rnd_loss = rnd_module.loss(rnd_z)
+                        opt_rnd.zero_grad()
+                        rnd_loss.backward()
+                        opt_rnd.step()
 
         # ── Periodic evaluation ──────────────────────────────────────────────
         if env_step % eval_interval < n_envs:
@@ -698,10 +817,16 @@ def run_abm_loop(
                     p.requires_grad_(False)
 
             if env_type == "miniworld":
-                sr = eval_miniworld(
-                    agent, encoder_single, device,
-                    seed_offset=9000 + env_step, n_eps=eval_n_eps,
-                )
+                if use_vjepa:
+                    sr = eval_miniworld_mpc(
+                        mpc, encoder_single, vjepa_enc, goal_buf, device,
+                        seed_offset=9000 + env_step, n_eps=eval_n_eps,
+                    )
+                else:
+                    sr = eval_miniworld(
+                        agent, encoder_single, device,
+                        seed_offset=9000 + env_step, n_eps=eval_n_eps,
+                    )
                 per_tier = {}
             elif env_type == "crafter":
                 sr, per_tier = eval_crafter(
@@ -738,9 +863,10 @@ def run_abm_loop(
             metrics["wall_time_s"].append(elapsed)
             metrics["per_tier"].append(per_tier)
 
-            if steps_to_80 is None and sr >= 0.80:
+            success_thr = 0.50 if env_type == "miniworld" else 0.80
+            if steps_to_80 is None and sr >= success_thr:
                 steps_to_80 = env_step
-                logger.info(f"[{condition.upper()}] *** 80% at step {env_step} ***")
+                logger.info(f"[{condition.upper()}] *** {success_thr:.0%} at step {env_step} ***")
 
         if sysm is not None and sysm.is_solved:
             logger.info(f"[{condition.upper()}] Solved! Stopping at step {env_step}.")

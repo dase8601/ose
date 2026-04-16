@@ -1,5 +1,49 @@
 # Changelog
 
+## 2026-04-16 — Paper 3 pivot: Replace PPO with Random Shooting MPC (DINO-WM style)
+
+### Why
+Paper 2 confirmed Yann LeCun's recommendation empirically: autonomous A-B-M hit 35%
+with only 18K ACT steps; PPO-only needed 410K steps to reach 35%. RL was the bottleneck,
+not the world model. Yann's Harvard slide: "Abandon RL → model-predictive control."
+DINO-WM (his team's paper) beats DreamerV3 4x with zero RL — same architecture we already have.
+
+### Changes
+
+#### `abm/mpc.py` — New file
+- `RandomShootingMPC`: batched MPC planner in DINOv2 representation space.
+  Samples K=256 random action sequences of horizon H=7, rolls each through
+  the trained VJEPAPredictor, selects sequence minimizing ||z_H - z_goal||².
+  Executes first action (receding horizon), replans every step.
+  Batched over all N_ENVS simultaneously for GPU efficiency.
+- `GoalBuffer`: rolling buffer (max 100) of DINOv2 goal encodings.
+  Populated passively when reward>0 (agent accidentally reaches goal during
+  random OBSERVE exploration). Provides z_goal to MPC during ACT phase.
+
+#### `abm/loop.py`
+- ACT block (miniworld + use_vjepa): replaced PPO with MPC planning.
+  `agent=None`, `ppo=None`, `buf_ppo=None` in miniworld path.
+  MPC lazy-initialized after predictor is warm (buf_vjepa ≥ LEWM_WARMUP).
+- OBSERVE block: passive goal collection when reward>0 during random exploration.
+- Added `eval_miniworld_mpc()`: evaluates MPC planner on N=20 episodes,
+  falls back to random actions if goal buffer is empty.
+- Periodic eval: routes miniworld to `eval_miniworld_mpc` when `use_vjepa=True`.
+- New conditions: `mpc_only` (always ACT, no world model training — random MPC)
+  and `random` (pure random baseline). Both always stay in ACT mode.
+- `steps_to_80` threshold: 50% for miniworld, 80% for doorkey/crafter.
+- `mode_str` init and encoder freeze guard updated for new conditions.
+
+#### `abm_experiment.py`
+- Added `mpc_only` and `random` to COLORS, LABELS, conditions lists.
+- `--all` with `--env miniworld` now runs Paper 3 conditions:
+  autonomous, fixed, mpc_only, random.
+- Plot functions use `COLORS.get()` / `LABELS.get()` to handle all conditions.
+- HTML report description updated to reflect MPC (Yann: abandon RL, use MPC).
+- Bar chart and results summary include all four conditions.
+- Steps milestone label: "steps_to_50" for miniworld.
+
+---
+
 ## 2026-04-15 — Add act_steps / observe_steps tracking for experimental fairness
 
 ### Why

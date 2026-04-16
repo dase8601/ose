@@ -1,14 +1,17 @@
 """
-abm_experiment.py — Run and compare all three A-B-M conditions.
+abm_experiment.py — Run and compare all A-B-M conditions.
+
+Paper 2 (PPO): autonomous | fixed | ppo_only
+Paper 3 (MPC): autonomous | fixed | mpc_only | random
 
 Usage:
-    # DoorKey (original)
-    python abm_experiment.py --all --device cuda
-    python abm_experiment.py --condition autonomous --device mps
+    # MiniWorld Paper 3 (DINO-WM / MPC)
+    python abm_experiment.py --all --device cuda --env miniworld --steps 200000
+    python abm_experiment.py --condition autonomous --device cuda --env miniworld
 
-    # Crafter (new — requires: pip install crafter)
+    # DoorKey / Crafter (Paper 2, PPO)
+    python abm_experiment.py --all --device cuda
     python abm_experiment.py --all --device cuda --env crafter --steps 1000000
-    python abm_experiment.py --condition autonomous --device cuda --env crafter
 """
 
 import argparse
@@ -36,12 +39,20 @@ COLORS = {
     "autonomous": "#2ecc71",
     "fixed":      "#3498db",
     "ppo_only":   "#aaaaaa",
+    "mpc_only":   "#e67e22",
+    "random":     "#95a5a6",
 }
 LABELS = {
-    "autonomous": "Autonomous System M\n(plateau-triggered)",
-    "fixed":      "Fixed-schedule System M\n(every 10K steps)",
+    "autonomous": "Autonomous System M\n(MPC + plateau-triggered)",
+    "fixed":      "Fixed-schedule System M\n(MPC + every 10K steps)",
     "ppo_only":   "PPO baseline\n(raw pixels, no LeWM)",
+    "mpc_only":   "MPC only\n(no world model, random shooting)",
+    "random":     "Random baseline\n(no planning, no world model)",
 }
+
+# All valid conditions — Paper 2 uses ppo_only; Paper 3 uses mpc_only + random
+ALL_CONDITIONS_P2  = ["autonomous", "fixed", "ppo_only"]
+ALL_CONDITIONS_P3  = ["autonomous", "fixed", "mpc_only", "random"]
 
 TIER_COLORS = {
     "tier1_basic":    "#27ae60",
@@ -90,8 +101,8 @@ def plot_learning_curves(results: dict, save_dir: Path, env_type: str) -> Path:
         sr    = data["success_rate"]
         if not steps:
             continue
-        color = COLORS[cond]
-        ax.plot(steps, sr, color=color, lw=2, label=LABELS[cond], alpha=0.9)
+        color = COLORS.get(cond, "#888888")
+        ax.plot(steps, sr, color=color, lw=2, label=LABELS.get(cond, cond), alpha=0.9)
 
         if cond == "autonomous":
             for sw in data.get("switch_log", []):
@@ -100,7 +111,7 @@ def plot_learning_curves(results: dict, save_dir: Path, env_type: str) -> Path:
     ax.axhline(target, color="red", linestyle="--", lw=1.2, label=target_label)
     ax.set_xlabel("Environment Steps", fontsize=11)
     ax.set_ylabel(y_label, fontsize=11)
-    subtitle = ("V-JEPA 2.1 (80M) + LSTM-PPO" if env_type == "miniworld"
+    subtitle = ("DINOv2 ViT-B/14 + MPC (DINO-WM style)" if env_type == "miniworld"
                  else "LeWM (1.5M params) + LSTM-PPO")
     ax.set_title(
         f"A-B-M Loop: Autonomous vs Fixed-Schedule Mode Switching\n"
@@ -205,7 +216,8 @@ def plot_comparison_bar(results: dict, save_dir: Path, env_type: str) -> Path:
     """Bar chart: steps to reach 80% (DoorKey) or peak score (Crafter)."""
     fig, ax = plt.subplots(figsize=(7, 4.5))
 
-    conds = [c for c in ("autonomous", "fixed", "ppo_only") if c in results]
+    conds = [c for c in ("autonomous", "fixed", "ppo_only", "mpc_only", "random")
+             if c in results]
 
     if env_type == "crafter":
         # For Crafter, bar = peak achievement score
@@ -336,7 +348,7 @@ def write_report(save_dir: Path, results: dict, plot_paths: dict,
         metric_col = "Steps to 80%"
 
     rows = ""
-    for cond in ("autonomous", "fixed", "ppo_only"):
+    for cond in ("autonomous", "fixed", "ppo_only", "mpc_only", "random"):
         d = results.get(cond)
         if d is None:
             continue
@@ -349,9 +361,10 @@ def write_report(save_dir: Path, results: dict, plot_paths: dict,
         o_steps  = d.get("observe_steps", 0)
         total_s  = a_steps + o_steps
         act_pct  = f"{a_steps/total_s:.0%}" if total_s > 0 else "—"
+        label    = LABELS.get(cond, cond).replace(chr(10), ' ')
         rows += f"""
         <tr>
-          <td><b>{LABELS[cond].replace(chr(10),' ')}</b></td>
+          <td><b>{label}</b></td>
           <td>{sr80}</td>
           <td>{peak:.1%}</td>
           <td>{n_sw}</td>
@@ -392,8 +405,9 @@ def write_report(save_dir: Path, results: dict, plot_paths: dict,
   <h1>A-B-M Experiment: Autonomous vs Fixed-Schedule Mode Switching</h1>
   <p>
     Empirical test of the Dupoux/LeCun/Malik A-B-M architecture (arXiv 2603.15381)
-    on <b>{env_name}</b>.  {"System A = V-JEPA 2.1 ViT-B (80M params, frozen pretrained encoder) + action-conditioned predictor." if env_type == "miniworld" else "System A = LeWM (~1.5M params, trains from pixels)."}
-    System B = LSTM-PPO.  System M = autonomous plateau-detect FSM vs fixed-schedule timer.
+    on <b>{env_name}</b>.
+    {"System A = DINOv2 ViT-B/14 (frozen) + action-conditioned world model predictor. System B = Random Shooting MPC (DINO-WM style — Yann LeCun: abandon RL, use MPC)." if env_type == "miniworld" else "System A = LeWM (~1.5M params, trains from pixels). System B = LSTM-PPO."}
+    System M = autonomous plateau-detect FSM vs fixed-schedule timer.
   </p>
   <div class="card">
     <h2>Results Summary</h2>
@@ -434,9 +448,11 @@ def write_report(save_dir: Path, results: dict, plot_paths: dict,
 
 def main():
     parser = argparse.ArgumentParser(description="A-B-M mode-switching experiment")
-    parser.add_argument("--condition", choices=["autonomous", "fixed", "ppo_only"],
+    parser.add_argument("--condition",
+                        choices=["autonomous", "fixed", "ppo_only", "mpc_only", "random"],
                         help="Single condition to run")
-    parser.add_argument("--all",    action="store_true", help="Run all three conditions")
+    parser.add_argument("--all",    action="store_true",
+                        help="Run all conditions (Paper 3: autonomous+fixed+mpc_only+random for miniworld)")
     parser.add_argument("--device", default="auto",       help="auto | mps | cpu | cuda")
     parser.add_argument("--env",    default="doorkey",
                         choices=["doorkey", "crafter", "miniworld"],
@@ -461,7 +477,10 @@ def main():
 
     conditions = []
     if args.all:
-        conditions = ["autonomous", "fixed", "ppo_only"]
+        if args.env == "miniworld":
+            conditions = ALL_CONDITIONS_P3   # autonomous, fixed, mpc_only, random
+        else:
+            conditions = ALL_CONDITIONS_P2   # autonomous, fixed, ppo_only
     elif args.condition:
         conditions = [args.condition]
     else:
@@ -518,8 +537,9 @@ def main():
         o_steps = data.get("observe_steps", 0)
         total_s = a_steps + o_steps
         act_pct = f"{a_steps/total_s:.0%}" if total_s > 0 else "—"
+        metric_label = "steps_to_50" if args.env == "miniworld" else "steps_to_80"
         logger.info(
-            f"  {cond:12s}: steps_to_80={s80 or 'N/A':>7}  |  "
+            f"  {cond:12s}: {metric_label}={s80 or 'N/A':>7}  |  "
             f"peak={peak:.1%}  |  switches={data.get('n_switches', 0)}  |  "
             f"act_steps={a_steps:,} ({act_pct})"
         )
