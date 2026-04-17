@@ -566,7 +566,7 @@ def run_abm_loop(
 
     ep_ret    = np.zeros(n_envs, dtype=np.float32)
     last_done = np.zeros(n_envs, dtype=bool)
-    lstm_state = agent.get_initial_state(n_envs, device)
+    lstm_state = agent.get_initial_state(n_envs, device) if agent is not None else None
 
     # ── Main loop ────────────────────────────────────────────────────────────
     while env_step < max_steps:
