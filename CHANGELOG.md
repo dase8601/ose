@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-04-18 — Fix: Cosine distance loss + action_repeat=4 (ssl_ewa=0.0001 bug)
+
+### Why
+Two dm_control runs failed: ssl_ewa=0.0001 from step 0, success stuck at 4-5% (random).
+Root cause: MSE loss on L2-normalized 768-dim vectors is always near-zero.
+Even with cos_sim=0.99 between consecutive frames, MSE = 2(1-0.99)/768 = 0.000026.
+The predictor trivially learns the identity function. The switching controller sees
+a "plateaued" loss and switches to ACT prematurely with an untrained world model.
+
+action_repeat=2 alone didn't help because MSE is fundamentally the wrong loss metric
+for unit-normalized high-dimensional vectors.
+
+### Changes
+- `abm/lewm.py` — VJEPAPredictor: switch loss from MSE to cosine distance (1 - cos_sim).
+  Cosine distance is scale-invariant and dimension-invariant. Range [0, 2] instead of
+  [0, ~0.00003]. Also updated intrinsic_reward to use cosine distance.
+- `abm/dmcontrol_env.py` — Increase action_repeat from 2 to 4. Each action executes for
+  4 physics steps, creating larger visual differences between consecutive observations.
+- `abm/loop.py` — Update ssl_freeze_thr from 0.02 to 0.05 for cosine distance scale.
+
+---
+
 ## 2026-04-18 — Architecture upgrade: patch features + CEM planner + dm_control
 
 ### Why

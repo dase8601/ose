@@ -248,7 +248,8 @@ class VJEPAPredictor(nn.Module):
         """
         a_onehot = F.one_hot(action, self.n_actions).float()
         z_pred   = self.forward(z_t.detach(), a_onehot)
-        loss     = F.mse_loss(z_pred, z_next.detach())
+        cos_sim  = F.cosine_similarity(z_pred, z_next.detach(), dim=-1)
+        loss     = (1 - cos_sim).mean()
 
         return loss, {
             "predictor_loss": loss.item(),
@@ -272,7 +273,7 @@ class VJEPAPredictor(nn.Module):
         """
         a_onehot = F.one_hot(action, self.n_actions).float()
         z_pred   = self.forward(z_t, a_onehot)
-        raw      = (z_pred - z_next).pow(2).mean(dim=-1)  # (B,)
+        raw      = 1 - F.cosine_similarity(z_pred, z_next, dim=-1)  # (B,)
 
         # Update running stats
         batch_mean = raw.mean()

@@ -108,6 +108,7 @@ class DMControlEnv(gymnasium.Env):
         seed: int = 0,
         img_size: int = 84,
         camera_id: int = 0,
+        action_repeat: int = 4,
     ):
         super().__init__()
 
@@ -119,6 +120,7 @@ class DMControlEnv(gymnasium.Env):
         self._img_size = img_size
         self._camera_id = camera_id
         self._seed = seed
+        self._action_repeat = action_repeat
 
         # Build discrete action set
         action_spec = self._env.action_spec()
@@ -154,10 +156,15 @@ class DMControlEnv(gymnasium.Env):
 
     def step(self, action: int):
         continuous_action = self._action_set[action]
-        time_step = self._env.step(continuous_action)
+        total_reward = 0.0
+        for _ in range(self._action_repeat):
+            time_step = self._env.step(continuous_action)
+            total_reward += float(time_step.reward or 0.0)
+            if time_step.last():
+                break
 
         obs = self._render_obs()
-        reward = float(time_step.reward or 0.0)
+        reward = total_reward / self._action_repeat
         terminated = time_step.last()
         truncated = False
 
@@ -178,8 +185,10 @@ def make_dmcontrol_env(
     task_name: str = "walker-walk",
     seed: int = 0,
     img_size: int = 84,
+    action_repeat: int = 4,
 ) -> DMControlEnv:
-    return DMControlEnv(task_name=task_name, seed=seed, img_size=img_size)
+    return DMControlEnv(task_name=task_name, seed=seed, img_size=img_size,
+                        action_repeat=action_repeat)
 
 
 def make_dmcontrol_vec_env(
@@ -188,11 +197,13 @@ def make_dmcontrol_vec_env(
     seed: int = 0,
     use_async: bool = True,
     img_size: int = 84,
+    action_repeat: int = 4,
 ):
     from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
 
     fns = [
-        lambda i=i: make_dmcontrol_env(task_name=task_name, seed=seed + i, img_size=img_size)
+        lambda i=i: make_dmcontrol_env(task_name=task_name, seed=seed + i,
+                                        img_size=img_size, action_repeat=action_repeat)
         for i in range(n_envs)
     ]
     if use_async:

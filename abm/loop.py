@@ -484,7 +484,7 @@ def run_abm_loop(
         ppo_rollout         = 128
         eval_interval       = 10_000
         eval_n_eps          = 20
-        ssl_freeze_thr      = 0.02
+        ssl_freeze_thr      = 0.05    # cosine distance scale (was 0.02 for MSE)
         min_sr_to_stay      = 0.10
         solve_threshold     = 1.01    # never auto-stop — use reward, not success rate
         use_rnd             = False
