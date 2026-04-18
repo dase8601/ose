@@ -479,7 +479,7 @@ def run_abm_loop(
                                   task_name=_task_name, seed=seed, img_size=img_h)
         _make_vec           = lambda n, seed, use_async: make_dmcontrol_vec_env(
                                   n, task_name=_task_name, seed=seed,
-                                  use_async=use_async, img_size=img_h)
+                                  use_async=False, img_size=img_h)  # sync — MuJoCo ctypes can't pickle across processes
         latent_dim          = 768     # DINOv2 ViT-B/14 CLS token
         ppo_rollout         = 128
         eval_interval       = 10_000
