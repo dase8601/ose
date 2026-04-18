@@ -394,6 +394,56 @@ def eval_miniworld_mpc(
     return successes / n_eps
 
 
+def eval_habitat_mpc(
+    mpc,
+    encoder_fn:  Callable,
+    vjepa_enc,
+    goal_buf,
+    device:      str,
+    seed_offset: int = 1000,
+    n_eps:       int = 20,
+) -> float:
+    """
+    Evaluate MPC planner on Habitat PointNav.
+    Returns: success_rate (fraction of episodes where agent reaches goal).
+    """
+    from .habitat_env import make_habitat_env
+
+    successes = 0
+    for ep in range(n_eps):
+        env = make_habitat_env(seed=seed_offset + ep, simple=True)
+        obs, _ = env.reset(seed=seed_offset + ep)
+
+        _goal_raw = env.get_goal_obs()
+        if _goal_raw is not None:
+            with torch.no_grad():
+                z_goal = vjepa_enc.encode_single(_goal_raw)
+        else:
+            z_goal = goal_buf.get_goal() if goal_buf is not None else None
+
+        done     = False
+        ep_steps = 0
+
+        while not done and ep_steps < 500:
+            with torch.no_grad():
+                z = encoder_fn(obs)
+
+            if mpc is not None and z_goal is not None:
+                action = mpc.plan_single(z, z_goal)
+            else:
+                action = env.action_space.sample()
+
+            obs, r, term, trunc, info = env.step(action)
+            done      = term or trunc
+            ep_steps += 1
+
+        if info.get("success", 0) > 0:
+            successes += 1
+        env.close()
+
+    return successes / n_eps
+
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -492,6 +542,28 @@ def run_abm_loop(
         obs_plateau_steps   = 20_000
         act_plateau_steps   = 60_000
         min_initial_observe = 30_000
+        n_train_steps       = 4
+        use_vjepa           = True
+        intrinsic_coef      = 0.1
+    elif env_type == "habitat":
+        from .habitat_env import make_habitat_env, make_habitat_vec_env
+        img_h = img_w       = 384     # Habitat native resolution
+        n_actions           = 4       # STOP, FORWARD, LEFT, RIGHT
+        _make_env           = lambda seed=0: make_habitat_env(seed=seed, simple=True)
+        _make_vec           = lambda n, seed, use_async: make_habitat_vec_env(
+                                  n, seed=seed, use_async=False, simple=True)
+        latent_dim          = 768     # DINOv2 ViT-B/14 CLS token
+        ppo_rollout         = 128
+        eval_interval       = 10_000
+        eval_n_eps          = 20
+        ssl_freeze_thr      = 0.05
+        min_sr_to_stay      = 0.05   # PointNav success is hard
+        solve_threshold     = 1.01
+        use_rnd             = False
+        rnd_coef            = 0.0
+        obs_plateau_steps   = 30_000
+        act_plateau_steps   = 80_000
+        min_initial_observe = 40_000
         n_train_steps       = 4
         use_vjepa           = True
         intrinsic_coef      = 0.1
@@ -705,6 +777,24 @@ def run_abm_loop(
         _tmp.close()
         logger.info(
             f"[{condition.upper()}] Goal buffer pre-seeded: {_seeded} high-reward states"
+        )
+
+    if use_vjepa and goal_buf is not None and env_type == "habitat":
+        from .habitat_env import make_habitat_env as _make_hab
+        logger.info(f"[{condition.upper()}] Pre-seeding goal buffer ({n_envs} envs)...")
+        _seeded = 0
+        for _s in range(seed, seed + n_envs):
+            _tmp = _make_hab(seed=_s, simple=True)
+            _tmp.reset(seed=_s)
+            _goal_raw = _tmp.get_goal_obs()
+            _tmp.close()
+            if _goal_raw is not None:
+                with torch.no_grad():
+                    _z_g = vjepa_enc.encode_single(_goal_raw)
+                goal_buf.push(_z_g)
+                _seeded += 1
+        logger.info(
+            f"[{condition.upper()}] Goal buffer pre-seeded: {_seeded}/{n_envs} goals"
         )
 
     # ── Main loop ────────────────────────────────────────────────────────────
@@ -968,6 +1058,12 @@ def run_abm_loop(
                     task_name=_task_name,
                     seed_offset=9000 + env_step, n_eps=eval_n_eps,
                     img_size=img_h,
+                )
+                per_tier = {}
+            elif env_type == "habitat":
+                sr = eval_habitat_mpc(
+                    mpc, encoder_single, vjepa_enc, goal_buf, device,
+                    seed_offset=9000 + env_step, n_eps=eval_n_eps,
                 )
                 per_tier = {}
             elif env_type == "miniworld":

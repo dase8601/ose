@@ -82,7 +82,7 @@ class HabitatPointNavEnv(gymnasium.Env):
         rgb = hab_obs["rgb"]  # (H, W, 3) uint8
         if rgb.dtype != np.uint8:
             rgb = (rgb * 255).astype(np.uint8)
-        return {"rgb": rgb}
+        return {"rgb": rgb, "image": rgb}
 
     def reset(self, seed=None, **kwargs):
         hab_obs = self._env.reset()
@@ -189,7 +189,7 @@ class HabitatPointNavSimpleEnv(gymnasium.Env):
         rgb = obs["rgb"][:, :, :3]  # drop alpha if present
         if rgb.dtype != np.uint8:
             rgb = (rgb * 255).astype(np.uint8)
-        return {"rgb": rgb}
+        return {"rgb": rgb, "image": rgb}
 
     def _agent_position(self):
         state = self._agent.get_state()
@@ -238,6 +238,31 @@ class HabitatPointNavSimpleEnv(gymnasium.Env):
             "success": success,
             "distance_to_goal": dist,
         }
+
+    def get_goal_obs(self):
+        """
+        Teleport agent to goal position, render observation, restore state.
+        Mirrors MiniWorldNavEnv.get_goal_obs() pattern.
+        """
+        if self._goal_position is None:
+            return None
+
+        import habitat_sim
+
+        state = self._agent.get_state()
+        saved = habitat_sim.AgentState()
+        saved.position = state.position
+        saved.rotation = state.rotation
+
+        goal_state = habitat_sim.AgentState()
+        goal_state.position = self._goal_position
+        goal_state.rotation = state.rotation
+        self._agent.set_state(goal_state)
+
+        goal_obs = self._get_obs()
+
+        self._agent.set_state(saved)
+        return goal_obs
 
     def close(self):
         self._sim.close()

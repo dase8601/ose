@@ -87,7 +87,8 @@ def plot_learning_curves(results: dict, save_dir: Path, env_type: str) -> Path:
                if env_type == "crafter" else
                "Success Rate (50-episode eval)")
     env_names = {"crafter": "Crafter", "doorkey": "MiniGrid-DoorKey-6x6",
-                  "miniworld": "MiniWorld-MazeS3", "dmcontrol": "dm_control Walker-Walk"}
+                  "miniworld": "MiniWorld-MazeS3", "dmcontrol": "dm_control Walker-Walk",
+                  "habitat": "Habitat PointNav"}
     env_name = env_names.get(env_type, env_type)
     if env_type == "crafter":
         target, target_label = 0.15, "15% score target"
@@ -95,6 +96,8 @@ def plot_learning_curves(results: dict, save_dir: Path, env_type: str) -> Path:
         target, target_label = 0.50, "50% nav success target"
     elif env_type == "dmcontrol":
         target, target_label = 0.50, "50% avg reward target"
+    elif env_type == "habitat":
+        target, target_label = 0.30, "30% nav success target"
     else:
         target, target_label = 0.80, "80% target"
 
@@ -340,7 +343,8 @@ def _img_tag(path: Path, max_width: int = 900) -> str:
 def write_report(save_dir: Path, results: dict, plot_paths: dict,
                  env_type: str) -> Path:
     env_names  = {"crafter": "Crafter", "doorkey": "MiniGrid-DoorKey-6x6",
-                   "miniworld": "MiniWorld-MazeS3", "dmcontrol": "dm_control Walker-Walk"}
+                   "miniworld": "MiniWorld-MazeS3", "dmcontrol": "dm_control Walker-Walk",
+                   "habitat": "Habitat PointNav"}
     env_name   = env_names.get(env_type, env_type)
     if env_type == "crafter":
         metric_col = "Steps to 15% score"
@@ -348,6 +352,8 @@ def write_report(save_dir: Path, results: dict, plot_paths: dict,
         metric_col = "Steps to 50% nav success"
     elif env_type == "dmcontrol":
         metric_col = "Avg reward (0-1)"
+    elif env_type == "habitat":
+        metric_col = "Steps to 30% nav success"
     else:
         metric_col = "Steps to 80%"
 
@@ -459,8 +465,8 @@ def main():
                         help="Run all conditions (Paper 3: autonomous+fixed+mpc_only+random for miniworld)")
     parser.add_argument("--device", default="auto",       help="auto | mps | cpu | cuda")
     parser.add_argument("--env",    default="doorkey",
-                        choices=["doorkey", "crafter", "miniworld", "dmcontrol"],
-                        help="Environment: doorkey | crafter | miniworld | dmcontrol")
+                        choices=["doorkey", "crafter", "miniworld", "dmcontrol", "habitat"],
+                        help="Environment: doorkey | crafter | miniworld | dmcontrol | habitat")
     parser.add_argument("--steps",  type=int, default=800_000)
     parser.add_argument("--seed",   type=int, default=42)
     parser.add_argument("--n-envs", type=int, default=16)
@@ -481,7 +487,7 @@ def main():
 
     conditions = []
     if args.all:
-        if args.env in ("miniworld", "dmcontrol"):
+        if args.env in ("miniworld", "dmcontrol", "habitat"):
             conditions = ALL_CONDITIONS_P3   # autonomous, fixed, mpc_only, random
         else:
             conditions = ALL_CONDITIONS_P2   # autonomous, fixed, ppo_only

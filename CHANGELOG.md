@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-04-18 — Habitat PointNav environment integration
+
+### Why
+dm_control walker-walk is a locomotion task, not a goal-reaching task. Goal-conditioned
+MPC (DINO-WM style) naturally fits navigation — "get from A to B." Walker-walk also
+collected zero goals (random actions → reward=0 → empty goal buffer → MPC defaults to
+random). Habitat PointNav provides photorealistic indoor navigation with explicit goal
+positions, discrete actions, and DINOv2-discriminative RGB observations.
+
+### Changes
+- `abm/habitat_env.py` — Added `get_goal_obs()` to HabitatPointNavSimpleEnv (teleports
+  agent to goal, renders, restores state). Added "image" key alias to obs dicts.
+- `abm/loop.py` — Added habitat env_type config block, `eval_habitat_mpc()` function,
+  habitat goal pre-seeding block, and eval dispatch branch.
+- `abm_experiment.py` — Added "habitat" to --env choices, plot configs, condition selection.
+- `setup_cloud.sh` — Added habitat-sim installation with conda fallback + test scene download.
+
 ## 2026-04-18 — Verbose logging for training diagnostics
 
 ### Changes

@@ -40,6 +40,14 @@ pip install miniworld omegaconf timm Pillow einops transformers -q
 echo "=== Installing dm_control (DeepMind Control Suite) ==="
 pip install dm_control mujoco -q
 
+echo "=== Installing Habitat (habitat-sim for PointNav) ==="
+pip install habitat-sim --extra-index-url https://aihabitat.org/packages/habitat-sim-nightly -q 2>/dev/null || {
+    echo "  pip install failed — trying conda fallback..."
+    conda install habitat-sim -c conda-forge -c aihabitat -y 2>/dev/null || echo "  habitat-sim install failed (non-critical, skip with --env dmcontrol)"
+}
+# Download test scenes (~89MB)
+python -c "import habitat_sim; habitat_sim.utils.datasets_download.main(['--uids', 'habitat_test_scenes'])" 2>/dev/null || echo "  Test scenes download skipped"
+
 echo "=== Verifying ==="
 python -c "
 import torch, gymnasium, minigrid
@@ -64,12 +72,17 @@ try:
     import dm_control; print('dm_control: OK')
 except Exception as e: print(f'dm_control: FAILED ({e})')
 
+try:
+    import habitat_sim; print('habitat_sim: OK')
+except Exception as e: print(f'habitat_sim: FAILED ({e})')
+
 print()
 print('Run commands:')
 print('  DoorKey:    python abm_experiment.py --all --device auto --steps 800000')
 print('  Crafter:    python abm_experiment.py --all --device auto --env crafter --steps 1000000')
 print('  MiniWorld:  python abm_experiment.py --all --device auto --env miniworld --steps 500000')
 print('  dm_control: python abm_experiment.py --all --device auto --env dmcontrol --steps 500000')
+print('  Habitat:    python abm_experiment.py --all --device auto --env habitat --steps 500000')
 print()
 print('Sanity check (run first!):')
 print('  python test_dmcontrol_dinov2.py --task walker-walk --steps 50')
