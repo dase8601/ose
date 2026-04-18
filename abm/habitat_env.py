@@ -131,16 +131,34 @@ class HabitatPointNavSimpleEnv(gymnasium.Env):
 
     def __init__(self, scene_path: str = None, seed: int = 0, max_steps: int = 500):
         super().__init__()
+        import glob
+        import os
         import habitat_sim
 
         self._seed = seed
         self._max_steps = max_steps
         self._step_count = 0
 
+        # Auto-detect scene file if not provided
+        if scene_path is None:
+            candidates = []
+            for base in [
+                "data/scene_datasets/habitat-test-scenes",
+                "/workspace/jepa/data/scene_datasets/habitat-test-scenes",
+                os.path.join(os.path.dirname(__file__), "..", "data", "scene_datasets", "habitat-test-scenes"),
+            ]:
+                candidates.extend(glob.glob(os.path.join(base, "*.glb")))
+            if not candidates:
+                raise FileNotFoundError(
+                    "No .glb scene files found. Run:\n"
+                    "  python -m habitat_sim.utils.datasets_download "
+                    "--uids habitat_test_scenes --data-path data/"
+                )
+            scene_path = os.path.abspath(candidates[0])
+
         # Minimal habitat-sim config
         sim_cfg = habitat_sim.SimulatorConfiguration()
-        if scene_path:
-            sim_cfg.scene_id = scene_path
+        sim_cfg.scene_id = os.path.abspath(scene_path)
         sim_cfg.enable_physics = False
 
         # RGB sensor
