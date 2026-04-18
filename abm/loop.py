@@ -273,6 +273,63 @@ def eval_miniworld(
 # MiniWorld MPC evaluation (Paper 3 — DINO-WM style, no RL)
 # ---------------------------------------------------------------------------
 
+def eval_dmcontrol_mpc(
+    mpc,
+    encoder_fn:  Callable,
+    vjepa_enc,
+    goal_buf,
+    device:      str,
+    task_name:   str = "walker-walk",
+    seed_offset: int = 1000,
+    n_eps:       int = 20,
+    img_size:    int = 84,
+) -> float:
+    """
+    Evaluate MPC planner on dm_control task.
+
+    Returns: average normalized reward (dm_control rewards are in [0, 1]).
+    We report this as "success_rate" for consistency with other envs.
+    """
+    from .dmcontrol_env import make_dmcontrol_env
+
+    total_reward = 0.0
+    for ep in range(n_eps):
+        env = make_dmcontrol_env(task_name=task_name, seed=seed_offset + ep, img_size=img_size)
+        obs, _ = env.reset()
+
+        # Goal: use high-reward state from goal buffer if available
+        z_goal = goal_buf.get_goal() if goal_buf is not None else None
+
+        done     = False
+        ep_steps = 0
+        ep_ret   = 0.0
+
+        while not done and ep_steps < 1000:
+            with torch.no_grad():
+                z = encoder_fn(obs)
+
+            if mpc is not None and z_goal is not None:
+                action = mpc.plan_single(z, z_goal)
+            else:
+                action = env.action_space.sample()
+
+            obs, r, term, trunc, _ = env.step(action)
+            done      = term or trunc
+            ep_ret   += r
+            ep_steps += 1
+
+            # Collect high-reward states as goals
+            if r > 0.8 and goal_buf is not None:
+                with torch.no_grad():
+                    z_g = vjepa_enc.encode_single(obs)
+                goal_buf.push(z_g)
+
+        total_reward += ep_ret / max(ep_steps, 1)
+        env.close()
+
+    return total_reward / n_eps
+
+
 def eval_miniworld_mpc(
     mpc,
     encoder_fn:  Callable,
@@ -395,7 +452,7 @@ def run_abm_loop(
         _make_env           = make_miniworld_env
         _make_vec           = lambda n, seed, use_async: make_miniworld_vec_env(
                                   n, seed=seed, use_async=False, img_size=160)  # sync — OpenGL can't share X across processes
-        latent_dim          = 768     # V-JEPA 2.1 ViT-B feature dim
+        latent_dim          = 1536    # DINOv2 patch features (mean+max pool of 768-dim patches)
         ppo_rollout         = 128
         eval_interval       = 10_000
         eval_n_eps          = 20
@@ -410,6 +467,33 @@ def run_abm_loop(
         n_train_steps       = 4       # predictor is lightweight, train intensively
         use_vjepa           = True    # use V-JEPA 2.1 encoder instead of LeWM CNN
         intrinsic_coef      = 0.1     # predictor-based intrinsic reward scale
+    elif env_type == "dmcontrol":
+        from .dmcontrol_env import make_dmcontrol_env, make_dmcontrol_vec_env
+        _task_name          = "walker-walk"   # DINO-WM benchmark task
+        img_h = img_w       = 84
+        _tmp_env            = make_dmcontrol_env(task_name=_task_name, seed=0, img_size=img_h)
+        n_actions           = _tmp_env.N_ACTIONS
+        _tmp_env.close()
+        _make_env           = lambda seed=0: make_dmcontrol_env(
+                                  task_name=_task_name, seed=seed, img_size=img_h)
+        _make_vec           = lambda n, seed, use_async: make_dmcontrol_vec_env(
+                                  n, task_name=_task_name, seed=seed,
+                                  use_async=use_async, img_size=img_h)
+        latent_dim          = 1536    # DINOv2 patch features (mean+max pool)
+        ppo_rollout         = 128
+        eval_interval       = 10_000
+        eval_n_eps          = 20
+        ssl_freeze_thr      = 0.02
+        min_sr_to_stay      = 0.10
+        solve_threshold     = 1.01    # never auto-stop — use reward, not success rate
+        use_rnd             = False
+        rnd_coef            = 0.0
+        obs_plateau_steps   = 20_000
+        act_plateau_steps   = 60_000
+        min_initial_observe = 30_000
+        n_train_steps       = 4
+        use_vjepa           = True
+        intrinsic_coef      = 0.1
     else:  # doorkey
         img_h = img_w       = IMG_H
         n_actions           = N_ACTIONS
@@ -457,11 +541,11 @@ def run_abm_loop(
         from .vjepa_encoder import VJEPAEncoder
 
         vjepa_enc = VJEPAEncoder(device=device)
-        feat_dim  = vjepa_enc.feature_dim   # 768 for ViT-B
-        logger.info(f"[{condition.upper()}] DINOv2 ViT-B/14 loaded — feature_dim={feat_dim}")
+        feat_dim  = vjepa_enc.feature_dim   # 1536 (patch mean+max pool)
+        logger.info(f"[{condition.upper()}] DINOv2 ViT-B/14 loaded — feature_dim={feat_dim} (patch features)")
 
         # MPC planner replaces PPO for miniworld (Yann: abandon RL → MPC)
-        from .mpc import RandomShootingMPC, GoalBuffer
+        from .mpc import CEMPlanner, GoalBuffer
         mpc        = None   # initialized after predictor is ready
         goal_buf   = GoalBuffer(max_size=100, device=device)
         agent      = None   # no PPO agent in miniworld MPC path
@@ -600,6 +684,28 @@ def run_abm_loop(
             f"[{condition.upper()}] Goal buffer pre-seeded: {_seeded}/{n_envs} goals"
         )
 
+    if use_vjepa and goal_buf is not None and env_type == "dmcontrol":
+        # dm_control: no teleport-to-goal. Run random rollouts and collect
+        # high-reward states as goal encodings (reward > 0.8 = good pose).
+        logger.info(f"[{condition.upper()}] Pre-seeding goal buffer via random rollouts...")
+        _seeded = 0
+        _tmp = _make_env(seed=seed)
+        _obs, _ = _tmp.reset()
+        for _t in range(500):
+            _a = _tmp.action_space.sample()
+            _obs, _r, _term, _trunc, _ = _tmp.step(_a)
+            if _r > 0.8:
+                with torch.no_grad():
+                    _z_g = vjepa_enc.encode_single(_obs)
+                goal_buf.push(_z_g)
+                _seeded += 1
+            if _term or _trunc:
+                _obs, _ = _tmp.reset()
+        _tmp.close()
+        logger.info(
+            f"[{condition.upper()}] Goal buffer pre-seeded: {_seeded} high-reward states"
+        )
+
     # ── Main loop ────────────────────────────────────────────────────────────
     while env_step < max_steps:
 
@@ -674,12 +780,13 @@ def run_abm_loop(
 
                 # Initialize MPC planner once predictor is warm
                 if use_vjepa and mpc is None and vjepa_pred is not None and len(buf_vjepa) >= LEWM_WARMUP:
-                    from .mpc import RandomShootingMPC
-                    mpc = RandomShootingMPC(
+                    from .mpc import CEMPlanner
+                    mpc = CEMPlanner(
                         vjepa_pred, n_actions=n_actions,
-                        horizon=7, n_samples=256, device=device,
+                        horizon=7, n_samples=256, n_elites=32,
+                        n_iters=3, device=device,
                     )
-                    logger.info(f"[{condition.upper()}] MPC planner ready (horizon=7, samples=256)")
+                    logger.info(f"[{condition.upper()}] CEM planner ready (horizon=7, samples=256, elites=32, iters=3)")
 
             else:
                 # LeWM CNN path (doorkey / crafter)
@@ -848,7 +955,15 @@ def run_abm_loop(
                 for p in lewm.encoder.parameters():
                     p.requires_grad_(False)
 
-            if env_type == "miniworld":
+            if env_type == "dmcontrol":
+                sr = eval_dmcontrol_mpc(
+                    mpc, encoder_single, vjepa_enc, goal_buf, device,
+                    task_name=_task_name,
+                    seed_offset=9000 + env_step, n_eps=eval_n_eps,
+                    img_size=img_h,
+                )
+                per_tier = {}
+            elif env_type == "miniworld":
                 if use_vjepa:
                     sr = eval_miniworld_mpc(
                         mpc, encoder_single, vjepa_enc, goal_buf, device,

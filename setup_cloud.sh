@@ -37,6 +37,9 @@ pip install minigrid gymnasium numpy matplotlib crafter -q
 echo "=== Installing MiniWorld + V-JEPA dependencies ==="
 pip install miniworld omegaconf timm Pillow einops transformers -q
 
+echo "=== Installing dm_control (DeepMind Control Suite) ==="
+pip install dm_control mujoco -q
+
 echo "=== Verifying ==="
 python -c "
 import torch, gymnasium, minigrid
@@ -57,11 +60,19 @@ try:
     import miniworld; print('miniworld: OK')
 except Exception as e: print(f'miniworld: FAILED ({e})')
 
+try:
+    import dm_control; print('dm_control: OK')
+except Exception as e: print(f'dm_control: FAILED ({e})')
+
 print()
 print('Run commands:')
-print('  DoorKey:   python abm_experiment.py --all --device auto --steps 800000')
-print('  Crafter:   python abm_experiment.py --all --device auto --env crafter --steps 1000000')
-print('  MiniWorld: python abm_experiment.py --all --device auto --env miniworld --steps 500000')
+print('  DoorKey:    python abm_experiment.py --all --device auto --steps 800000')
+print('  Crafter:    python abm_experiment.py --all --device auto --env crafter --steps 1000000')
+print('  MiniWorld:  python abm_experiment.py --all --device auto --env miniworld --steps 500000')
+print('  dm_control: python abm_experiment.py --all --device auto --env dmcontrol --steps 500000')
+print()
+print('Sanity check (run first!):')
+print('  python test_dmcontrol_dinov2.py --task walker-walk --steps 50')
 print()
 print('NOTE: If you open a new terminal, run: export DISPLAY=:1')
 print('      Or restart Xvfb: Xvfb :1 -screen 0 1024x768x24 &')

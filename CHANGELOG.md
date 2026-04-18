@@ -1,5 +1,57 @@
 # Changelog
 
+## 2026-04-18 — Architecture upgrade: patch features + CEM planner + dm_control
+
+### Why
+MiniWorld (cos_sim=0.997) and ARC-AGI (cos_sim=0.995) both failed because DINOv2
+CLS token is too coarse — maps all frames to nearly identical directions. Predictor
+learned "z_next ≈ z_current" instantly (ssl_ewa=0.0001), MPC degraded to random.
+
+Per "What Drives Success in JEPA-WMs" (Terver et al., Jan 2026 — Yann's team):
+- CLS token is wrong → use patch features (DINO-WM uses all patch tokens)
+- Random shooting is wrong → CEM L2 is optimal planning algorithm
+- MLP predictor is suboptimal → ViT with AdaLN is best (future upgrade)
+
+### Changes
+
+#### `abm/vjepa_encoder.py` — Patch features instead of CLS token
+- Switched from `x_norm_clstoken` (768-dim) to `x_norm_patchtokens` (256 patches × 768-dim)
+- Pool patches via concat(mean_pool, max_pool) → 1536-dim output
+- Preserves spatial information: max_pool captures most distinctive patches
+- Sanity check updated for patch features
+
+#### `abm/mpc.py` — CEM planner replaces Random Shooting
+- New `CEMPlanner` class: iteratively refines action distributions
+- K=256 candidates, E=32 elites, 3 CEM iterations per planning step
+- Categorical distribution over discrete actions, Laplace smoothing
+- `RandomShootingMPC` kept as alias for backward compatibility
+
+#### `abm/lewm.py` — Updated default feature dims
+- `VJEPAPredictor` default: feature_dim=1536 (was 768)
+- `VJEPAReplayBuffer` default: feature_dim=1536 (was 768)
+
+#### `abm/dmcontrol_env.py` — New: DeepMind Control Suite wrapper
+- Gymnasium wrapper for dm_control tasks (walker-walk, cartpole-swingup, etc.)
+- Discretizes continuous actions into fixed primitives for MPC compatibility
+- Camera-rendered RGB observations at configurable resolution
+- Same interface as miniworld_env.py: {"image": ..., "rgb": ...}
+
+#### `abm/loop.py` — dm_control integration
+- Added `eval_dmcontrol_mpc()` function (reward-based evaluation)
+- Added `dmcontrol` env_type config block
+- Updated MPC initialization to use CEMPlanner
+- Goal buffer pre-seeding via random rollouts (collect r > 0.8 states)
+- Updated latent_dim from 768 to 1536 for miniworld and dmcontrol
+
+#### `test_dmcontrol_dinov2.py` — New: DINOv2 discrimination test
+- Tests both patch features and CLS token for comparison
+- Reports consecutive, distant, and overall cosine similarities
+- Saves sample frames as PNG
+
+#### `setup_cloud.sh` — Added dm_control + mujoco install
+
+---
+
 ## 2026-04-17 — Option A: Fix goal specification — DINO-WM style explicit goal image
 
 ### Why
