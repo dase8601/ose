@@ -1,5 +1,15 @@
 # Changelog
 
+## 2026-04-19 — Auto-save test results to GitHub
+
+### Why
+RunPod results are lost when pods shut down. Need persistent storage.
+
+### Changes
+- `abm_experiment.py` — Added `push_results_to_github()` that copies JSON/PNG/HTML
+  results to `tests/{env}_{timestamp}/`, writes a summary.json, and auto-pushes to
+  GitHub after each experiment completes.
+
 ## 2026-04-19 — Fix goal diversity + predictor normalization (Run 3 prep)
 
 ### Why

@@ -554,6 +554,43 @@ def main():
             f"act_steps={a_steps:,} ({act_pct})"
         )
 
+    push_results_to_github(save_dir, args.env, args.condition)
+
+
+def push_results_to_github(save_dir: Path, env_type: str, condition: str = None):
+    """Auto-commit and push results after each experiment run."""
+    import subprocess
+    import shutil
+    import datetime
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    test_dir = Path("tests") / f"{env_type}_{timestamp}"
+    test_dir.mkdir(parents=True, exist_ok=True)
+
+    for f in save_dir.glob("*"):
+        if f.suffix in (".json", ".png", ".html"):
+            shutil.copy2(f, test_dir / f.name)
+
+    summary = {
+        "env_type": env_type,
+        "condition": condition or "all",
+        "timestamp": timestamp,
+        "files": [f.name for f in test_dir.iterdir()],
+    }
+    with open(test_dir / "summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
+    try:
+        subprocess.run(["git", "add", str(test_dir)], check=True)
+        subprocess.run([
+            "git", "commit", "-m",
+            f"Test results: {env_type} {condition or 'all'} {timestamp}"
+        ], check=True)
+        subprocess.run(["git", "push", "origin", "main"], check=True)
+        logger.info(f"Results pushed to GitHub: {test_dir}/")
+    except subprocess.CalledProcessError as e:
+        logger.warning(f"Failed to push results to GitHub: {e}")
+
 
 if __name__ == "__main__":
     main()
