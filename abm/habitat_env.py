@@ -133,6 +133,12 @@ class HabitatPointNavSimpleEnv(gymnasium.Env):
         super().__init__()
         import glob
         import os
+
+        # Suppress habitat-sim C++ warnings BEFORE importing the library
+        os.environ["MAGNUM_LOG"] = "quiet"
+        os.environ["HABITAT_SIM_LOG"] = "quiet"
+        os.environ["GLOG_minloglevel"] = "3"
+
         import habitat_sim
 
         self._seed = seed
@@ -155,11 +161,6 @@ class HabitatPointNavSimpleEnv(gymnasium.Env):
                     "--uids habitat_test_scenes --data-path data/"
                 )
             scene_path = os.path.abspath(candidates[0])
-
-        # Suppress noisy habitat-sim C++ warnings about missing semantic files
-        os.environ.setdefault("HABITAT_SIM_LOG", "quiet")
-        os.environ.setdefault("MAGNUM_LOG", "quiet")
-        os.environ.setdefault("GLOG_minloglevel", "3")
 
         # Minimal habitat-sim config
         sim_cfg = habitat_sim.SimulatorConfiguration()
