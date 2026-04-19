@@ -583,13 +583,13 @@ def run_abm_loop(
         eval_interval       = EVAL_INTERVAL
         eval_n_eps          = EVAL_EPISODES
         ssl_freeze_thr      = 0.08
-        min_sr_to_stay      = 0.30
+        min_sr_to_stay      = 0.10
         solve_threshold     = 0.80
         use_rnd             = False
         rnd_coef            = 0.0
         obs_plateau_steps   = 8_000
         act_plateau_steps   = 20_000
-        min_initial_observe = 0
+        min_initial_observe = 15_000
         n_train_steps       = 1       # standard training rate for simple env
         use_vjepa           = False
 
