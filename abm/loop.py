@@ -614,6 +614,7 @@ def run_abm_loop(
     vjepa_pred   = None
     opt_pred     = None
     buf_vjepa    = None
+    mpc          = None
 
     if use_vjepa:
         # ── V-JEPA 2.1 path (habitat) ──────────────────────────────────────
@@ -898,10 +899,6 @@ def run_abm_loop(
                     encoder_frozen = False
                     for p in lewm.encoder.parameters():
                         p.requires_grad_(True)
-                    logger.info(
-                        f"[{condition.upper()}] Encoder unfrozen at step {env_step} "
-                        f"— System M returned to OBSERVE"
-                    )
 
                 actions  = envs.action_space.sample()
                 obs_imgs = obs[obs_key].copy()
@@ -942,10 +939,6 @@ def run_abm_loop(
                     encoder_frozen = True
                     for p in lewm.encoder.parameters():
                         p.requires_grad_(False)
-                    logger.info(
-                        f"[{condition.upper()}] Encoder frozen at step {env_step} "
-                        f"(ssl_ewa={ssl_ewa:.4f})"
-                    )
 
         # ── ACT step ─────────────────────────────────────────────────────────
         else:
