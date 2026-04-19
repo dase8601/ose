@@ -1,5 +1,23 @@
 # Changelog
 
+## 2026-04-19 — Fix goal diversity + predictor normalization (Run 3 prep)
+
+### Why
+Run 2 (200K steps) showed goal_div=0.01 (all 100 goal embeddings nearly identical)
+and cem_cost=0.74 flat (planner can't differentiate actions). Two root causes:
+single-view goal capture produces identical DINOv2 CLS embeddings across rooms,
+and unnormalized predictor output drifts off the unit sphere over 15 CEM rollout steps.
+
+### Changes
+- `abm/habitat_env.py` — `get_goal_obs()` now renders 4 views (0°, 90°, 180°, 270°)
+  at goal position, returns list of 4 obs dicts instead of 1. Gives goal buffer
+  diverse spatial perspectives of each goal location.
+- `abm/lewm.py` — `VJEPAPredictor.forward()` now L2-normalizes output. Keeps
+  predicted states on the unit sphere so cosine distance stays meaningful across
+  all CEM rollout steps.
+- `abm/loop.py` — Updated habitat goal pre-seeding to push all 4 views individually.
+  Updated eval functions to mean-pool multi-view goal encodings.
+
 ## 2026-04-19 — Run 2 tuning: H=15, cosine distance, diagnostic logging
 
 ### Why

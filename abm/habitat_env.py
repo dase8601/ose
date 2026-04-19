@@ -265,28 +265,31 @@ class HabitatPointNavSimpleEnv(gymnasium.Env):
 
     def get_goal_obs(self):
         """
-        Teleport agent to goal position, render observation, restore state.
-        Mirrors MiniWorldNavEnv.get_goal_obs() pattern.
+        Teleport agent to goal, render 4 views (0°, 90°, 180°, 270°),
+        restore state.  Returns list of 4 obs dicts for diverse goal
+        embeddings (fixes goal_div ≈ 0.01 from single-view capture).
         """
         if self._goal_position is None:
             return None
 
         import habitat_sim
+        import math
 
         state = self._agent.get_state()
         saved = habitat_sim.AgentState()
         saved.position = state.position
         saved.rotation = state.rotation
 
-        goal_state = habitat_sim.AgentState()
-        goal_state.position = self._goal_position
-        goal_state.rotation = state.rotation
-        self._agent.set_state(goal_state)
-
-        goal_obs = self._get_obs()
+        views = []
+        for angle in [0, math.pi / 2, math.pi, 3 * math.pi / 2]:
+            goal_state = habitat_sim.AgentState()
+            goal_state.position = self._goal_position
+            goal_state.rotation = [0, math.sin(angle / 2), 0, math.cos(angle / 2)]
+            self._agent.set_state(goal_state)
+            views.append(self._get_obs())
 
         self._agent.set_state(saved)
-        return goal_obs
+        return views
 
     def close(self):
         self._sim.close()

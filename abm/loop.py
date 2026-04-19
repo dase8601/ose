@@ -359,7 +359,10 @@ def eval_miniworld_mpc(
         _goal_raw = env.get_goal_obs()
         if _goal_raw is not None:
             with torch.no_grad():
-                z_goal = vjepa_enc.encode_single(_goal_raw)
+                if isinstance(_goal_raw, list):
+                    z_goal = torch.cat([vjepa_enc.encode_single(v) for v in _goal_raw], dim=0).mean(0, keepdim=True)
+                else:
+                    z_goal = vjepa_enc.encode_single(_goal_raw)
         else:
             z_goal = goal_buf.get_goal() if goal_buf is not None else None
 
@@ -417,7 +420,10 @@ def eval_habitat_mpc(
         _goal_raw = env.get_goal_obs()
         if _goal_raw is not None:
             with torch.no_grad():
-                z_goal = vjepa_enc.encode_single(_goal_raw)
+                if isinstance(_goal_raw, list):
+                    z_goal = torch.cat([vjepa_enc.encode_single(v) for v in _goal_raw], dim=0).mean(0, keepdim=True)
+                else:
+                    z_goal = vjepa_enc.encode_single(_goal_raw)
         else:
             z_goal = goal_buf.get_goal() if goal_buf is not None else None
 
@@ -790,9 +796,13 @@ def run_abm_loop(
             _tmp.close()
             if _goal_raw is not None:
                 with torch.no_grad():
-                    _z_g = vjepa_enc.encode_single(_goal_raw)
-                goal_buf.push(_z_g)
-                _seeded += 1
+                    if isinstance(_goal_raw, list):
+                        for _view in _goal_raw:
+                            goal_buf.push(vjepa_enc.encode_single(_view))
+                            _seeded += 1
+                    else:
+                        goal_buf.push(vjepa_enc.encode_single(_goal_raw))
+                        _seeded += 1
         logger.info(
             f"[{condition.upper()}] Goal buffer pre-seeded: {_seeded}/{n_envs} goals"
         )

@@ -232,8 +232,9 @@ class VJEPAPredictor(nn.Module):
         self._reward_count = 0
 
     def forward(self, z: torch.Tensor, a_onehot: torch.Tensor) -> torch.Tensor:
-        """Predict z_{t+1} from (z_t, action)."""
-        return self.net(torch.cat([z, a_onehot], dim=-1))
+        """Predict z_{t+1} from (z_t, action). Output is L2-normalized."""
+        out = self.net(torch.cat([z, a_onehot], dim=-1))
+        return F.normalize(out, p=2, dim=-1)
 
     def loss(self, z_t: torch.Tensor, action: torch.Tensor,
              z_next: torch.Tensor) -> tuple:
