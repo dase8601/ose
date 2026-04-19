@@ -46,6 +46,7 @@ class VJEPAEncoder:
             "vit_base_patch14_dinov2.lvd142m",
             pretrained=True,
             num_classes=0,
+            img_size=img_size,
         )
         self.encoder = self.encoder.to(device).eval()
 
