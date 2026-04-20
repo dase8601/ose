@@ -1,5 +1,29 @@
 # Changelog
 
+## 2026-04-19 — MPC goal-conditioned planning on DoorKey (no RL)
+
+### Why
+Yann LeCun: "abandon RL in favor of model-predictive control." DoorKey's LeWM
+encoder discriminates states well (unlike DINOv2 CLS on indoor scenes), so it's
+the right env to prove the full LeCun architecture: observe → build world model →
+imagine actions → plan toward goal image. No RL needed.
+
+### Changes
+- `abm/loop.py` — Added `GoalObsWrapper` (teleports MiniGrid agent to goal square,
+  renders, restores). Added `eval_doorkey_mpc()` for MPC-based evaluation. Added
+  MPC-only and MPC+RL ACT paths for DoorKey. CEM planner initializes with
+  `lewm.predictor` after warmup (horizon=7, 256 samples, 32 elites). Goal buffer
+  pre-seeded by teleporting to goal in each training env.
+- `abm/loop.py` — `run_abm_loop()` now accepts `observe_steps`, `use_mpc`, `use_rl`
+  parameters for the 4-test matrix.
+- `abm_experiment.py` — Added `--observe-steps`, `--use-mpc`, `--no-rl` CLI flags.
+
+### 4-Test Matrix (MacBook M3 Pro)
+1. 30K observe, MPC only (`--observe-steps 30000 --use-mpc --no-rl`)
+2. 30K observe, MPC + RL (`--observe-steps 30000 --use-mpc`)
+3. 50K observe, MPC only (`--observe-steps 50000 --use-mpc --no-rl`)
+4. 50K observe, MPC + RL (`--observe-steps 50000 --use-mpc`)
+
 ## 2026-04-19 — Auto-save test results to GitHub
 
 ### Why

@@ -470,6 +470,12 @@ def main():
     parser.add_argument("--steps",  type=int, default=800_000)
     parser.add_argument("--seed",   type=int, default=42)
     parser.add_argument("--n-envs", type=int, default=16)
+    parser.add_argument("--observe-steps", type=int, default=None,
+                        help="Override initial OBSERVE steps (for MPC experiments)")
+    parser.add_argument("--use-mpc", action="store_true",
+                        help="Use MPC planning instead of PPO in ACT mode")
+    parser.add_argument("--no-rl", action="store_true",
+                        help="Disable RL (PPO) — MPC only, no policy gradient")
     args = parser.parse_args()
 
     if args.device == "auto":
@@ -511,12 +517,15 @@ def main():
         logger.info(f"{'='*60}\n")
 
         result = run_abm_loop(
-            condition = cond,
-            device    = args.device,
-            max_steps = args.steps,
-            seed      = args.seed,
-            n_envs    = args.n_envs,
-            env_type  = args.env,
+            condition     = cond,
+            device        = args.device,
+            max_steps     = args.steps,
+            seed          = args.seed,
+            n_envs        = args.n_envs,
+            env_type      = args.env,
+            observe_steps = args.observe_steps,
+            use_mpc       = args.use_mpc,
+            use_rl        = not args.no_rl,
         )
         all_results[cond] = result
 

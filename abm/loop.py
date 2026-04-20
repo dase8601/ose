@@ -102,10 +102,46 @@ class ShapedRewardWrapper(gymnasium.Wrapper):
         return obs, reward, term, trunc, info
 
 
+class GoalObsWrapper(gymnasium.Wrapper):
+    """Adds get_goal_obs() to MiniGrid environments by teleporting to goal."""
+
+    def __init__(self, env, tile_size: int = 8):
+        super().__init__(env)
+        self.tile_size = tile_size
+
+    def get_goal_obs(self):
+        inner = self.env.unwrapped
+        saved_pos = inner.agent_pos.copy()
+        saved_dir = inner.agent_dir
+
+        goal_pos = None
+        for x in range(inner.grid.width):
+            for y in range(inner.grid.height):
+                cell = inner.grid.get(x, y)
+                if cell is not None and cell.type == "goal":
+                    goal_pos = (x, y)
+                    break
+            if goal_pos is not None:
+                break
+
+        if goal_pos is None:
+            return None
+
+        inner.agent_pos = np.array(goal_pos)
+        inner.agent_dir = 0
+        raw_obs = inner.gen_obs()
+        rgb_img = inner.get_obs_render(raw_obs["image"], tile_size=self.tile_size)
+
+        inner.agent_pos = saved_pos
+        inner.agent_dir = saved_dir
+        return {"image": rgb_img}
+
+
 def make_doorkey_env(seed: int = 0):
     env = gymnasium.make("MiniGrid-DoorKey-6x6-v0", render_mode="rgb_array")
     env = ShapedRewardWrapper(env)
     env = RGBImgObsWrapper(env, tile_size=8)
+    env = GoalObsWrapper(env, tile_size=8)
     return env
 
 
@@ -165,6 +201,43 @@ def eval_doorkey(
             done   = term or trunc
             done_t = torch.tensor([float(done)], device=device)
             ep_ret  += r
+            ep_steps += 1
+        if ep_ret > 0.5:
+            successes += 1
+        env.close()
+    return successes / n_eps
+
+
+def eval_doorkey_mpc(
+    mpc,
+    encoder_fn:  Callable,
+    goal_buf,
+    device:      str,
+    seed_offset: int = 1000,
+    n_eps:       int = EVAL_EPISODES,
+) -> float:
+    """Eval DoorKey using MPC planning (no PPO agent)."""
+    if mpc is None or goal_buf is None or len(goal_buf) == 0:
+        return 0.0
+
+    z_goal = goal_buf.get_goal()
+    if z_goal is None:
+        return 0.0
+
+    successes = 0
+    for ep in range(n_eps):
+        env = make_doorkey_env(seed=seed_offset + ep)
+        obs, _ = env.reset(seed=seed_offset + ep)
+        done = False
+        ep_steps = 0
+        ep_ret = 0.0
+        while not done and ep_steps < 300:
+            with torch.no_grad():
+                z = encoder_fn(obs)
+                action = mpc.plan_single(z, z_goal)
+            obs, r, term, trunc, _ = env.step(action)
+            done = term or trunc
+            ep_ret += r
             ep_steps += 1
         if ep_ret > 0.5:
             successes += 1
@@ -461,18 +534,24 @@ def run_abm_loop(
     seed:      int = 42,
     n_envs:    int = N_ENVS,
     env_type:  str = "doorkey",   # "doorkey" | "crafter" | "miniworld"
+    observe_steps: Optional[int] = None,
+    use_mpc:   bool = False,
+    use_rl:    bool = True,
 ) -> Dict:
     """
     Run a single condition of the A-B-M experiment.
 
     Parameters
     ----------
-    condition : "autonomous" | "fixed" | "ppo_only" | "mpc_only" | "random"
-    device    : "cuda" | "mps" | "cpu"
-    max_steps : total environment steps
-    seed      : random seed
-    n_envs    : number of parallel environments
-    env_type  : "doorkey" | "crafter" | "miniworld"
+    condition     : "autonomous" | "fixed" | "ppo_only" | "mpc_only" | "random"
+    device        : "cuda" | "mps" | "cpu"
+    max_steps     : total environment steps
+    seed          : random seed
+    n_envs        : number of parallel environments
+    env_type      : "doorkey" | "crafter" | "miniworld"
+    observe_steps : override min_initial_observe (for MPC experiments)
+    use_mpc       : use MPC planning in ACT mode (DoorKey)
+    use_rl        : also use PPO alongside MPC (MPC+RL hybrid)
 
     Returns
     -------
@@ -593,6 +672,13 @@ def run_abm_loop(
         n_train_steps       = 1       # standard training rate for simple env
         use_vjepa           = False
 
+    if observe_steps is not None:
+        min_initial_observe = observe_steps
+        logger.info(f"[{condition.upper()}] observe_steps override: min_initial_observe={observe_steps}")
+
+    if use_mpc:
+        logger.info(f"[{condition.upper()}] MPC mode enabled (use_rl={use_rl})")
+
     logger.info(
         f"[{condition.upper()}] Starting — env={env_type}, device={device}, "
         f"max_steps={max_steps}, n_envs={n_envs}"
@@ -664,6 +750,7 @@ def run_abm_loop(
         lewm     = None
         opt_lewm = None
         buf_lew  = None
+        goal_buf = None
 
         def encoder(obs_dict):
             imgs = obs_dict[obs_key]
@@ -680,11 +767,23 @@ def run_abm_loop(
         # ── LeWM CNN path (doorkey / crafter) ───────────────────────────────
         obs_key  = "image"
         lewm     = LeWM(latent_dim=latent_dim, n_actions=n_actions, img_size=img_h).to(device)
-        agent    = PPOAgent(latent_dim=latent_dim, n_actions=n_actions, hidden=HIDDEN_SIZE).to(device)
-        ppo      = PPO(agent, lr=PPO_LR)
-        buf_ppo  = RolloutBuffer(ppo_rollout, n_envs, latent_dim, device, hidden_size=HIDDEN_SIZE)
         buf_lew  = ReplayBuffer(capacity=50_000)
         opt_lewm = optim.Adam(lewm.parameters(), lr=LEWM_LR)
+
+        if use_mpc and not use_rl:
+            agent   = None
+            ppo     = None
+            buf_ppo = None
+        else:
+            agent   = PPOAgent(latent_dim=latent_dim, n_actions=n_actions, hidden=HIDDEN_SIZE).to(device)
+            ppo     = PPO(agent, lr=PPO_LR)
+            buf_ppo = RolloutBuffer(ppo_rollout, n_envs, latent_dim, device, hidden_size=HIDDEN_SIZE)
+
+        # MPC components for LeWM path
+        goal_buf = None
+        if use_mpc:
+            from .mpc import GoalBuffer
+            goal_buf = GoalBuffer(max_size=100, device=device)
 
         def encoder(obs_dict):
             return lewm.encode(batch_obs_to_tensor(obs_dict, device))
@@ -804,6 +903,24 @@ def run_abm_loop(
                     else:
                         goal_buf.push(vjepa_enc.encode_single(_goal_raw))
                         _seeded += 1
+        logger.info(
+            f"[{condition.upper()}] Goal buffer pre-seeded: {_seeded}/{n_envs} goals"
+        )
+
+    # Pre-seed goal buffer for DoorKey (LeWM path with MPC)
+    if use_mpc and goal_buf is not None and env_type == "doorkey":
+        logger.info(f"[{condition.upper()}] Pre-seeding DoorKey goal buffer ({n_envs} envs)...")
+        _seeded = 0
+        for _s in range(seed, seed + n_envs):
+            _tmp = make_doorkey_env(seed=_s)
+            _tmp.reset(seed=_s)
+            _goal_raw = _tmp.get_goal_obs()
+            _tmp.close()
+            if _goal_raw is not None:
+                with torch.no_grad():
+                    _z_g = encoder_single(_goal_raw)
+                goal_buf.push(_z_g)
+                _seeded += 1
         logger.info(
             f"[{condition.upper()}] Goal buffer pre-seeded: {_seeded}/{n_envs} goals"
         )
@@ -940,6 +1057,16 @@ def run_abm_loop(
                     for p in lewm.encoder.parameters():
                         p.requires_grad_(False)
 
+                # Initialize CEM planner for DoorKey MPC once LeWM is warm
+                if use_mpc and mpc is None and len(buf_lew) >= LEWM_WARMUP:
+                    from .mpc import CEMPlanner
+                    mpc = CEMPlanner(
+                        lewm.predictor, n_actions=n_actions,
+                        horizon=7, n_samples=256, n_elites=32,
+                        n_iters=3, device=device,
+                    )
+                    logger.info(f"[{condition.upper()}] CEM planner ready for DoorKey (horizon=7, samples=256)")
+
         # ── ACT step ─────────────────────────────────────────────────────────
         else:
             if use_vjepa:
@@ -989,8 +1116,36 @@ def run_abm_loop(
                 last_done = dones
                 obs       = next_obs
 
+            elif use_mpc and not use_rl:
+                # ── MPC-only (DoorKey / LeWM) — no RL ────────────────────────
+                with torch.no_grad():
+                    z = encoder(obs)
+
+                z_goal = goal_buf.get_goal() if goal_buf else None
+
+                if mpc is not None and z_goal is not None:
+                    z_goal_batch = z_goal.expand(n_envs, -1)
+                    actions_np = mpc.plan_batch(z, z_goal_batch)
+                else:
+                    actions_np = envs.action_space.sample()
+
+                next_obs, rewards, terms, truncs, _ = envs.step(actions_np)
+                dones     = terms | truncs
+                ep_ret   += rewards
+                env_step += n_envs
+                act_steps += n_envs
+
+                for i in range(n_envs):
+                    if dones[i]:
+                        if condition == "autonomous":
+                            sysm.act_step(float(ep_ret[i]), None, env_step)
+                        ep_ret[i] = 0.0
+
+                last_done = dones
+                obs       = next_obs
+
             else:
-                # ── PPO (doorkey / crafter) ───────────────────────────────────
+                # ── PPO (doorkey / crafter), optionally with MPC ──────────────
                 done_t = torch.tensor(last_done.astype(np.float32), device=device)
 
                 if buf_ppo._ptr == 0:
@@ -998,11 +1153,30 @@ def run_abm_loop(
 
                 with torch.no_grad():
                     z = encoder(obs)
-                    actions, log_probs, _, values, lstm_state = agent.get_action_and_value(
-                        z, lstm_state, done_t
-                    )
 
-                next_obs, rewards, terms, truncs, _ = envs.step(actions.cpu().numpy())
+                    if use_mpc and mpc is not None and goal_buf is not None:
+                        z_goal = goal_buf.get_goal()
+                        if z_goal is not None:
+                            z_goal_batch = z_goal.expand(n_envs, -1)
+                            actions_np = mpc.plan_batch(z, z_goal_batch)
+                            actions = torch.from_numpy(actions_np).to(device)
+                            log_probs = torch.zeros(n_envs, device=device)
+                            values = agent.get_value(z, lstm_state, done_t)
+                            _, _, _, _, lstm_state = agent.get_action_and_value(
+                                z, lstm_state, done_t
+                            )
+                        else:
+                            actions, log_probs, _, values, lstm_state = agent.get_action_and_value(
+                                z, lstm_state, done_t
+                            )
+                    else:
+                        actions, log_probs, _, values, lstm_state = agent.get_action_and_value(
+                            z, lstm_state, done_t
+                        )
+
+                next_obs, rewards, terms, truncs, _ = envs.step(
+                    actions.cpu().numpy() if isinstance(actions, torch.Tensor) else actions
+                )
                 dones     = terms | truncs
                 ep_ret   += rewards
                 env_step += n_envs
@@ -1016,7 +1190,7 @@ def run_abm_loop(
 
                 buf_ppo.add(
                     z.detach(),
-                    actions,
+                    actions if isinstance(actions, torch.Tensor) else torch.from_numpy(actions).to(device),
                     log_probs,
                     combined_rewards,
                     torch.tensor(dones.astype(np.float32), device=device),
@@ -1087,8 +1261,14 @@ def run_abm_loop(
                     seed_offset=9000 + env_step, n_eps=eval_n_eps,
                 )
             else:
-                sr       = eval_doorkey(agent, encoder_single, device,
-                                        seed_offset=9000 + env_step, n_eps=eval_n_eps)
+                if use_mpc:
+                    sr = eval_doorkey_mpc(
+                        mpc, encoder_single, goal_buf, device,
+                        seed_offset=9000 + env_step, n_eps=eval_n_eps,
+                    )
+                else:
+                    sr = eval_doorkey(agent, encoder_single, device,
+                                     seed_offset=9000 + env_step, n_eps=eval_n_eps)
                 per_tier = {}
 
             if lewm is not None and not encoder_frozen:
@@ -1115,7 +1295,7 @@ def run_abm_loop(
                 detail_parts.append(f"replay={len(buf_vjepa)}")
             elif buf_lew is not None:
                 detail_parts.append(f"replay={len(buf_lew)}")
-            if use_vjepa and goal_buf is not None:
+            if goal_buf is not None:
                 detail_parts.append(f"goals={len(goal_buf)}")
             if use_vjepa and vjepa_pred is not None and ssl_loss_val is not None:
                 detail_parts.append(f"pred_loss={ssl_loss_val:.4f}")
@@ -1125,9 +1305,9 @@ def run_abm_loop(
             if mpc is not None:
                 detail_parts.append("mpc=ready")
                 detail_parts.append(f"cem_cost={getattr(mpc, '_last_best_cost', 0.0):.4f}")
-            else:
+            elif use_mpc:
                 detail_parts.append("mpc=NOT_READY")
-            if use_vjepa and goal_buf is not None:
+            if goal_buf is not None:
                 z_goal = goal_buf.get_goal()
                 detail_parts.append(f"has_goal={'YES' if z_goal is not None else 'NO'}")
                 if len(goal_buf) > 1:
