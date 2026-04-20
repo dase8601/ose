@@ -1,0 +1,13 @@
+{
+  "env_type": "doorkey",
+  "condition": "autonomous",
+  "timestamp": "20260420_151617",
+  "files": [
+    "metrics_autonomous.json",
+    "learning_curves.png",
+    "ssl_loss_curve.png",
+    "mode_switches.png",
+    "comparison_bar.png",
+    "report.html"
+  ]
+}
