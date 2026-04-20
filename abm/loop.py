@@ -668,7 +668,7 @@ def run_abm_loop(
         obs_plateau_steps   = 8_000
         act_plateau_steps   = 20_000
         min_initial_observe = 15_000
-        n_train_steps       = 1       # standard training rate for simple env
+        n_train_steps       = 4 if use_mpc else 1
         use_vjepa           = False
 
     if observe_steps is not None:
@@ -924,6 +924,19 @@ def run_abm_loop(
             f"[{condition.upper()}] Goal buffer pre-seeded: {_seeded}/{n_envs} goals"
         )
 
+    # Store raw goal images for re-encoding when encoder changes
+    _raw_goal_images = []
+    if use_mpc and goal_buf is not None and env_type == "doorkey":
+        for _s in range(seed, seed + n_envs):
+            _tmp = make_doorkey_env(seed=_s)
+            _tmp.reset(seed=_s)
+            _g = _tmp.get_goal_obs()
+            _tmp.close()
+            if _g is not None:
+                _raw_goal_images.append(_g)
+
+    _prev_mode = None
+
     # ── Main loop ────────────────────────────────────────────────────────────
     while env_step < max_steps:
 
@@ -937,6 +950,16 @@ def run_abm_loop(
             current_mode = sysm.mode
         else:
             current_mode = sysm.step(env_step)
+
+        # Re-encode goals when switching to ACT (encoder may have changed)
+        if (use_mpc and goal_buf is not None and _raw_goal_images
+                and current_mode == Mode.ACT and _prev_mode == Mode.OBSERVE):
+            goal_buf._buf.clear()
+            with torch.no_grad():
+                for _g in _raw_goal_images:
+                    goal_buf.push(encoder_single(_g))
+            logger.info(f"[{condition.upper()}] Re-encoded {len(_raw_goal_images)} goals with updated encoder")
+        _prev_mode = current_mode
 
         mode_str = current_mode.name
         if encoder_frozen:

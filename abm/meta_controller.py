@@ -113,7 +113,7 @@ class AutonomousSystemM:
         h2     = float(np.mean(losses[mid:]))
         rel    = abs(h1 - h2) / (h1 + 1e-8)
 
-        logger.info(
+        logger.debug(
             f"[SystemM] OBSERVE plateau check: h1={h1:.4f} h2={h2:.4f} "
             f"rel_change={rel:.4f} threshold={self.plateau_threshold} "
             f"samples={len(losses)} time_in={time_in}"
