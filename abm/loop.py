@@ -111,7 +111,7 @@ class GoalObsWrapper(gymnasium.Wrapper):
 
     def get_goal_obs(self):
         inner = self.env.unwrapped
-        saved_pos = inner.agent_pos.copy()
+        saved_pos = tuple(inner.agent_pos)
         saved_dir = inner.agent_dir
 
         goal_pos = None
