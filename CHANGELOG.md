@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026-04-20 — MPC+RL hybrid, bug fixes from MacBook test, RunPod prep
+
+### Why
+Pure MPC-only ran 11+ hours on MacBook with 0% success. Root causes: stale goal
+embeddings after encoder updates, cosine distance wrong for LeWM (needs L2),
+eval too slow (50 eps × MPC planning). Yann says "minimize RL, not eliminate it"
+— MPC+RL hybrid is the right approach.
+
+### Changes
+- `abm/mpc.py` — Added `distance` param to CEMPlanner ("l2" or "cosine")
+- `abm/loop.py` — Re-encode goals on OBSERVE→ACT switch (fixes stale embeddings),
+  4x predictor training for MPC, eval uses PPO agent when available (MPC+RL),
+  encoder freeze threshold 0.08→0.03, horizon 7→12
+- `abm/meta_controller.py` — Plateau check logs changed to debug level
+
+### Revised Test Matrix (RunPod A100)
+1. 30K observe, MPC+PPO (`--observe-steps 30000 --use-mpc`)
+2. 50K observe, MPC+PPO (`--observe-steps 50000 --use-mpc`)
+
 ## 2026-04-19 — MPC goal-conditioned planning on DoorKey (no RL)
 
 ### Why
