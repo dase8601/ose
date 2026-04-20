@@ -577,7 +577,7 @@ def run_abm_loop(
         rnd_coef            = 0.1     # scale of intrinsic vs extrinsic reward
         obs_plateau_steps   = 20_000  # longer OBSERVE phases for visual complexity
         act_plateau_steps   = 100_000 # long ACT — let PPO train uninterrupted
-        min_initial_observe = 50_000  # deep first OBSERVE (LeCun: observe then act)
+        min_initial_observe = 80_000  # deep first OBSERVE (LeCun: observe then act)
         n_train_steps       = 2       # gradient steps per env step during OBSERVE
         use_vjepa           = False
     elif env_type == "miniworld":
