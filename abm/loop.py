@@ -129,8 +129,7 @@ class GoalObsWrapper(gymnasium.Wrapper):
 
         inner.agent_pos = np.array(goal_pos)
         inner.agent_dir = 0
-        raw_obs = inner.gen_obs()
-        rgb_img = inner.get_obs_render(raw_obs["image"], tile_size=self.tile_size)
+        rgb_img = inner.get_frame(highlight=False, tile_size=self.tile_size)
 
         inner.agent_pos = saved_pos
         inner.agent_dir = saved_dir
