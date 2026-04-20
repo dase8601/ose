@@ -659,7 +659,7 @@ def run_abm_loop(
         latent_dim          = LATENT_DIM
         ppo_rollout         = PPO_ROLLOUT
         eval_interval       = EVAL_INTERVAL
-        eval_n_eps          = EVAL_EPISODES
+        eval_n_eps          = 10 if use_mpc else EVAL_EPISODES
         ssl_freeze_thr      = 0.03
         min_sr_to_stay      = 0.10
         solve_threshold     = 0.80
