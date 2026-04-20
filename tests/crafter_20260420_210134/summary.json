@@ -1,0 +1,14 @@
+{
+  "env_type": "crafter",
+  "condition": "autonomous",
+  "timestamp": "20260420_210134",
+  "files": [
+    "report.html",
+    "metrics_autonomous.json",
+    "learning_curves.png",
+    "ssl_loss_curve.png",
+    "mode_switches.png",
+    "comparison_bar.png",
+    "crafter_tiers.png"
+  ]
+}
