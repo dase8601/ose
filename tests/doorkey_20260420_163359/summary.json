@@ -1,0 +1,15 @@
+{
+  "env_type": "doorkey",
+  "condition": "all",
+  "timestamp": "20260420_163359",
+  "files": [
+    "learning_curves.png",
+    "ssl_loss_curve.png",
+    "mode_switches.png",
+    "comparison_bar.png",
+    "report.html",
+    "metrics_autonomous.json",
+    "metrics_fixed.json",
+    "metrics_ppo_only.json"
+  ]
+}
