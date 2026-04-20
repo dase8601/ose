@@ -660,7 +660,7 @@ def run_abm_loop(
         ppo_rollout         = PPO_ROLLOUT
         eval_interval       = EVAL_INTERVAL
         eval_n_eps          = EVAL_EPISODES
-        ssl_freeze_thr      = 0.08
+        ssl_freeze_thr      = 0.03
         min_sr_to_stay      = 0.10
         solve_threshold     = 0.80
         use_rnd             = False
@@ -1061,10 +1061,11 @@ def run_abm_loop(
                     from .mpc import CEMPlanner
                     mpc = CEMPlanner(
                         lewm.predictor, n_actions=n_actions,
-                        horizon=7, n_samples=256, n_elites=32,
+                        horizon=12, n_samples=256, n_elites=32,
                         n_iters=3, device=device,
+                        distance="l2",
                     )
-                    logger.info(f"[{condition.upper()}] CEM planner ready for DoorKey (horizon=7, samples=256)")
+                    logger.info(f"[{condition.upper()}] CEM planner ready for DoorKey (horizon=12, L2 distance)")
 
         # ── ACT step ─────────────────────────────────────────────────────────
         else:

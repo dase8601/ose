@@ -58,6 +58,7 @@ class CEMPlanner:
         n_elites:  int = 32,
         n_iters:   int = 3,
         device:    str = "cuda",
+        distance:  str = "cosine",
     ):
         self.predictor = predictor
         self.n_actions = n_actions
@@ -66,6 +67,7 @@ class CEMPlanner:
         self.n_elites  = n_elites
         self.n_iters   = n_iters
         self.device    = device
+        self.distance  = distance
 
     @torch.no_grad()
     def _rollout(
@@ -85,8 +87,11 @@ class CEMPlanner:
             z        = self.predictor(z, a_onehot)
 
         z_goal_exp = z_goal.unsqueeze(1).expand(B, K, feat_dim).reshape(B * K, feat_dim)
-        cos_sim = F.cosine_similarity(z, z_goal_exp, dim=-1)
-        dist = (1.0 - cos_sim).reshape(B, K)
+        if self.distance == "l2":
+            dist = (z - z_goal_exp).pow(2).sum(dim=-1).reshape(B, K)
+        else:
+            cos_sim = F.cosine_similarity(z, z_goal_exp, dim=-1)
+            dist = (1.0 - cos_sim).reshape(B, K)
         return dist
 
     @torch.no_grad()
