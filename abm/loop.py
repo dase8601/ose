@@ -27,6 +27,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 import torch.optim as optim
 
 os.environ.setdefault("SDL_VIDEODRIVER", "dummy")
@@ -37,7 +38,8 @@ import gymnasium
 from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
 from minigrid.wrappers import RGBImgObsWrapper
 
-from .lewm import LeWM, ReplayBuffer, VJEPAPredictor, VJEPAReplayBuffer
+from .lewm import (LeWM, ReplayBuffer, SequenceReplayBuffer,
+                    VJEPAPredictor, VJEPAReplayBuffer)
 from .ppo import PPO, PPOAgent, RolloutBuffer
 from .meta_controller import AutonomousSystemM, FixedSystemM, Mode
 from .rnd import RND
@@ -579,6 +581,7 @@ def run_abm_loop(
         act_plateau_steps   = 100_000 # long ACT — let PPO train uninterrupted
         min_initial_observe = 80_000  # deep first OBSERVE (LeCun: observe then act)
         n_train_steps       = 2       # gradient steps per env step during OBSERVE
+        predictor_type      = "transformer"  # transformer predictor for MPC planning
         use_vjepa           = False
     elif env_type == "miniworld":
         from .miniworld_env import make_miniworld_env, make_miniworld_vec_env
@@ -669,6 +672,7 @@ def run_abm_loop(
         act_plateau_steps   = 20_000
         min_initial_observe = 15_000
         n_train_steps       = 4 if use_mpc else 1
+        predictor_type      = "mlp"
         use_vjepa           = False
 
     if observe_steps is not None:
@@ -765,8 +769,10 @@ def run_abm_loop(
     else:
         # ── LeWM CNN path (doorkey / crafter) ───────────────────────────────
         obs_key  = "image"
-        lewm     = LeWM(latent_dim=latent_dim, n_actions=n_actions, img_size=img_h).to(device)
+        lewm     = LeWM(latent_dim=latent_dim, n_actions=n_actions, img_size=img_h,
+                        predictor_type=predictor_type).to(device)
         buf_lew  = ReplayBuffer(capacity=50_000)
+        buf_seq  = SequenceReplayBuffer(capacity=50_000, seq_len=8) if predictor_type == "transformer" else None
         opt_lewm = optim.Adam(lewm.parameters(), lr=LEWM_LR)
 
         if use_mpc and not use_rl:
@@ -1049,8 +1055,11 @@ def run_abm_loop(
                         if final_mask[i]:
                             next_imgs[i] = infos["final_observation"][obs_key][i]
 
+                dones = terms | truncs
                 for i in range(n_envs):
                     buf_lew.push(obs_imgs[i], int(actions[i]), next_imgs[i])
+                    if buf_seq is not None:
+                        buf_seq.push(obs_imgs[i], int(actions[i]), bool(dones[i]))
 
                 obs           = next_obs
                 env_step     += n_envs
@@ -1058,6 +1067,7 @@ def run_abm_loop(
 
                 ssl_loss_val = None
                 if len(buf_lew) >= LEWM_WARMUP:
+                    # 1-step training (works for both MLP and transformer)
                     for _ in range(n_train_steps):
                         obs_t, acts, obs_next = buf_lew.sample(LEWM_BATCH, device)
                         opt_lewm.zero_grad()
@@ -1065,6 +1075,21 @@ def run_abm_loop(
                         loss.backward()
                         opt_lewm.step()
                     ssl_loss_val = info["loss_total"]
+
+                    # Sequence training for transformer predictor
+                    if buf_seq is not None and len(buf_seq) > buf_seq.seq_len * 2:
+                        seq_data = buf_seq.sample_sequences(
+                            batch_size=64, encoder_fn=lewm.encode,
+                            n_actions=n_actions, device=device,
+                        )
+                        if seq_data is not None:
+                            z_seq, a_onehot_seq, z_next_target = seq_data
+                            opt_lewm.zero_grad()
+                            z_pred = lewm.predictor.forward_sequence(z_seq, a_onehot_seq)
+                            seq_loss = (1 - F.cosine_similarity(z_pred, z_next_target.detach(), dim=-1)).mean()
+                            seq_loss.backward()
+                            opt_lewm.step()
+
                     ssl_ewa = (ssl_loss_val if ssl_ewa is None
                                else 0.95 * ssl_ewa + 0.05 * ssl_loss_val)
 

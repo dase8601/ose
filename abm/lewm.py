@@ -99,6 +99,75 @@ class Predictor(nn.Module):
 
 
 # ---------------------------------------------------------------------------
+# TransformerPredictor — drop-in replacement with temporal context
+# ---------------------------------------------------------------------------
+
+class TransformerPredictor(nn.Module):
+    """
+    Transformer-based action-conditioned predictor.
+
+    Same forward(z, a_onehot) interface as MLP Predictor so CEMPlanner
+    works unchanged. Additionally supports forward_sequence() for
+    training with temporal context windows.
+    """
+
+    def __init__(
+        self,
+        feature_dim:      int = 512,
+        n_actions:        int = 17,
+        depth:            int = 4,
+        nhead:            int = 8,
+        dim_feedforward:  int = 1024,
+    ):
+        super().__init__()
+        self.feature_dim = feature_dim
+        self.n_actions   = n_actions
+
+        self.input_proj = nn.Linear(feature_dim + n_actions, feature_dim)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=feature_dim,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            batch_first=True,
+            norm_first=True,
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=depth)
+
+        self.output_proj = nn.Linear(feature_dim, feature_dim)
+
+    def forward(self, z: torch.Tensor, a_onehot: torch.Tensor) -> torch.Tensor:
+        """
+        Drop-in replacement for MLP Predictor.
+        z:        (B, feature_dim)
+        a_onehot: (B, n_actions)
+        Returns:  (B, feature_dim)
+        """
+        x = self.input_proj(torch.cat([z, a_onehot], dim=-1))
+        x = x.unsqueeze(1)
+        x = self.transformer(x)
+        x = x.squeeze(1)
+        return self.output_proj(x)
+
+    def forward_sequence(
+        self,
+        z_seq:   torch.Tensor,
+        a_seq:   torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Sequence prediction with causal attention context.
+        z_seq: (B, T, feature_dim) — encoded states
+        a_seq: (B, T, n_actions)   — one-hot actions
+        Returns: (B, feature_dim)  — predicted next state after last token
+        """
+        tokens = self.input_proj(torch.cat([z_seq, a_seq], dim=-1))
+        T = tokens.shape[1]
+        mask = nn.Transformer.generate_square_subsequent_mask(T, device=tokens.device)
+        out = self.transformer(tokens, mask=mask)
+        return self.output_proj(out[:, -1])
+
+
+# ---------------------------------------------------------------------------
 # SIGReg — enforce z ~ N(0, I) via random projections
 # ---------------------------------------------------------------------------
 
@@ -141,12 +210,20 @@ class LeWM(nn.Module):
 
     SIGREG_LAMBDA = 0.1    # weight of regularisation term
 
-    def __init__(self, latent_dim: int = 256, n_actions: int = 7, img_size: int = 48):
+    def __init__(self, latent_dim: int = 256, n_actions: int = 7, img_size: int = 48,
+                 predictor_type: str = "mlp"):
         super().__init__()
-        self.latent_dim = latent_dim
-        self.n_actions  = n_actions
-        self.encoder    = Encoder(latent_dim, img_size=img_size)
-        self.predictor  = Predictor(latent_dim, n_actions)
+        self.latent_dim     = latent_dim
+        self.n_actions      = n_actions
+        self.predictor_type = predictor_type
+        self.encoder        = Encoder(latent_dim, img_size=img_size)
+        if predictor_type == "transformer":
+            self.predictor = TransformerPredictor(
+                feature_dim=latent_dim, n_actions=n_actions,
+                depth=4, nhead=8, dim_feedforward=1024,
+            )
+        else:
+            self.predictor = Predictor(latent_dim, n_actions)
 
     def encode(self, obs: torch.Tensor) -> torch.Tensor:
         """obs: (B, 3, H, W) float32 [0,1]  →  (B, latent_dim)"""
@@ -173,7 +250,10 @@ class LeWM(nn.Module):
         a_onehot = F.one_hot(action_t, self.n_actions).float() # (B, n_actions)
         z_pred   = self.predictor(z_t, a_onehot)               # (B, D)
 
-        pred_loss = F.mse_loss(z_pred, z_next)
+        if self.predictor_type == "transformer":
+            pred_loss = (1 - F.cosine_similarity(z_pred, z_next, dim=-1)).mean()
+        else:
+            pred_loss = F.mse_loss(z_pred, z_next)
         reg_loss  = sigreg(z_t)
         total     = pred_loss + self.SIGREG_LAMBDA * reg_loss
 
@@ -379,3 +459,90 @@ class ReplayBuffer:
 
     def __len__(self) -> int:
         return len(self._buf)
+
+
+# ---------------------------------------------------------------------------
+# SequenceReplayBuffer — contiguous episodes for transformer training
+# ---------------------------------------------------------------------------
+
+class SequenceReplayBuffer:
+    """
+    Stores contiguous episodes for sequence-based predictor training.
+    Unlike ReplayBuffer which stores individual (obs, act, obs_next) tuples,
+    this preserves episode structure so we can sample temporal windows.
+    """
+
+    def __init__(self, capacity: int = 50_000, seq_len: int = 8):
+        self.capacity  = capacity
+        self.seq_len   = seq_len
+        self._obs: list      = []
+        self._actions: list  = []
+        self._ep_starts: list = [0]
+
+    def push(self, obs: np.ndarray, action: int, done: bool) -> None:
+        self._obs.append(obs)
+        self._actions.append(action)
+        if done:
+            self._ep_starts.append(len(self._obs))
+        if len(self._obs) > self.capacity:
+            trim = self._ep_starts[1] if len(self._ep_starts) > 1 else 256
+            self._obs = self._obs[trim:]
+            self._actions = self._actions[trim:]
+            self._ep_starts = [s - trim for s in self._ep_starts if s >= trim]
+            if not self._ep_starts or self._ep_starts[0] != 0:
+                self._ep_starts.insert(0, 0)
+
+    def _valid_starts(self) -> list:
+        valid = []
+        for i in range(len(self._ep_starts) - 1):
+            start, end = self._ep_starts[i], self._ep_starts[i + 1]
+            for j in range(start, end - self.seq_len):
+                valid.append(j)
+        return valid
+
+    def sample_sequences(
+        self,
+        batch_size: int,
+        encoder_fn,
+        n_actions:  int,
+        device:     str,
+    ):
+        """
+        Sample B sequences of length seq_len.
+        Returns (z_seq, a_onehot_seq, z_next) or None if not enough data.
+        """
+        valid = self._valid_starts()
+        if not valid:
+            return None
+
+        idx = np.random.choice(
+            valid, size=min(batch_size, len(valid)), replace=False
+        )
+
+        obs_seqs = []
+        act_seqs = []
+        for i in idx:
+            obs_seqs.append(self._obs[i : i + self.seq_len + 1])
+            act_seqs.append(self._actions[i : i + self.seq_len])
+
+        all_obs = np.stack([o for seq in obs_seqs for o in seq])
+        with torch.no_grad():
+            x = torch.from_numpy(all_obs.astype(np.float32) / 255.0)
+            x = x.permute(0, 3, 1, 2).to(device)
+            z_all = encoder_fn(x)
+
+        B = len(idx)
+        T = self.seq_len
+        D = z_all.shape[-1]
+        z_all = z_all.reshape(B, T + 1, D)
+
+        z_seq  = z_all[:, :T]
+        z_next = z_all[:, -1]
+
+        a_tensor = torch.tensor(act_seqs, dtype=torch.long, device=device)
+        a_onehot = F.one_hot(a_tensor, n_actions).float()
+
+        return z_seq, a_onehot, z_next
+
+    def __len__(self) -> int:
+        return len(self._obs)
