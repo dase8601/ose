@@ -796,7 +796,6 @@ def run_abm_loop(
     rnd_module = None
     opt_rnd    = None
     if use_rnd:
-        rnd_input_dim = latent_dim if not use_vjepa else vjepa_enc.feature_dim
         rnd_module = RND(input_dim=rnd_input_dim).to(device)
         opt_rnd    = optim.Adam(rnd_module.predictor.parameters(), lr=1e-4)
 
