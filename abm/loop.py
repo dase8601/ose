@@ -1383,10 +1383,6 @@ def run_abm_loop(
                 steps_to_80 = env_step
                 logger.info(f"[{condition.upper()}] *** {success_thr:.0%} at step {env_step} ***")
 
-        if sysm is not None and sysm.is_solved:
-            logger.info(f"[{condition.upper()}] Solved! Stopping at step {env_step}.")
-            break
-
     envs.close()
     elapsed_total = time.time() - t0
 

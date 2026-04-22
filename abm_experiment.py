@@ -563,7 +563,8 @@ def main():
             f"act_steps={a_steps:,} ({act_pct})"
         )
 
-    push_results_to_github(save_dir, args.env, args.condition)
+    # Disabled for long runs: avoid auto-push failures interrupting result handling.
+    # push_results_to_github(save_dir, args.env, args.condition)
 
 
 def push_results_to_github(save_dir: Path, env_type: str, condition: str = None):
