@@ -15,6 +15,7 @@ Usage:
 """
 
 import argparse
+import importlib
 import json
 import logging
 import os
@@ -25,8 +26,6 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import numpy as np
-
-from abm.loop import run_abm_loop
 
 logging.basicConfig(
     level=logging.INFO,
@@ -476,6 +475,8 @@ def main():
                         help="Use MPC planning instead of PPO in ACT mode")
     parser.add_argument("--no-rl", action="store_true",
                         help="Disable RL (PPO) — MPC only, no policy gradient")
+    parser.add_argument("--loop-module", default="abm.loop",
+                        help="Python module exposing run_abm_loop, e.g. abm.loop or abm.loop_acwm")
     args = parser.parse_args()
 
     if args.device == "auto":
@@ -487,6 +488,9 @@ def main():
         else:
             args.device = "cpu"
     logger.info(f"Device: {args.device}  |  Env: {args.env}")
+
+    loop_module = importlib.import_module(args.loop_module)
+    run_abm_loop = loop_module.run_abm_loop
 
     save_dir = Path(f"results/{args.env}")
     save_dir.mkdir(parents=True, exist_ok=True)
