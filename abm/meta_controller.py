@@ -163,6 +163,22 @@ class AutonomousSystemM:
 
         return self.mode
 
+    def force_switch(
+        self,
+        new_mode: Mode,
+        env_step: int,
+        reason: str,
+    ) -> Mode:
+        """Public escape hatch for environment-specific switching rules."""
+        if new_mode == self.mode:
+            return self.mode
+        logger.info(
+            f"[SystemM] *** FORCED SWITCH {self.mode.name}→{new_mode.name} "
+            f"at step {env_step} ({reason}) ***"
+        )
+        self._switch(new_mode, env_step)
+        return self.mode
+
     def _switch(self, new_mode: Mode, env_step: int) -> None:
         if new_mode == self.mode:
             return  # already in this mode, skip

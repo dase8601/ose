@@ -269,7 +269,7 @@ def run_acwm_loop(
         sysm = AutonomousSystemM(
             obs_plateau_steps=obs_plateau_steps,
             act_plateau_steps=act_plateau_steps,
-            plateau_threshold=0.01,
+            plateau_threshold=0.03,
             solve_threshold=solve_threshold,
             min_sr_to_stay=min_sr_to_stay,
             min_initial_observe=min_initial_observe,
@@ -310,6 +310,7 @@ def run_acwm_loop(
 
         mode_str = current_mode.name
         ssl_loss_val = None
+        executed_mode = current_mode
 
         if current_mode == Mode.OBSERVE:
             actions = envs.action_space.sample()
@@ -364,7 +365,8 @@ def run_acwm_loop(
                 ssl_ewa = ssl_loss_val if ssl_ewa is None else 0.95 * ssl_ewa + 0.05 * ssl_loss_val
 
                 if condition == "autonomous":
-                    sysm.observe_step(ssl_loss_val, env_step)
+                    observe_signal = ssl_ewa if ssl_ewa is not None else ssl_loss_val
+                    sysm.observe_step(observe_signal, env_step)
 
                 if mpc is None:
                     mpc = CEMPlanner(
@@ -380,6 +382,20 @@ def run_acwm_loop(
                     logger.info(
                         f"[{condition.upper()}] ACWM planner ready for Crafter "
                         f"(horizon=15, samples=256, elites=32, iters=4)"
+                    )
+
+                if (
+                    condition == "autonomous"
+                    and sysm.mode == Mode.OBSERVE
+                    and sysm.n_switches() == 0
+                    and env_step >= min_initial_observe
+                    and mpc is not None
+                    and len(goal_buf) > 0
+                ):
+                    sysm.force_switch(
+                        Mode.ACT,
+                        env_step,
+                        "initial observe budget satisfied; planner ready; goals available",
                     )
 
         else:
@@ -443,8 +459,11 @@ def run_acwm_loop(
                 goal_refresh_steps=goal_refresh_steps,
             )
 
-            if condition == "autonomous":
+            if condition == "autonomous" and executed_mode == Mode.ACT:
                 sysm.act_step(None, sr, env_step)
+
+            if sysm is not None:
+                mode_str = sysm.mode.name
 
             n_sw = sysm.n_switches() if sysm else 0
             elapsed = time.time() - t0
@@ -527,4 +546,3 @@ def run_acwm_loop(
 
 # Drop-in compatibility with abm_experiment.py dynamic import.
 run_abm_loop = run_acwm_loop
-
