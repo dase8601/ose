@@ -337,8 +337,9 @@ def run_doorkey_mpc_loop(
                         z_seq, a_onehot_seq, z_next_target = seq_data
                         opt_lewm.zero_grad()
                         z_pred = lewm.predictor.forward_sequence(z_seq, a_onehot_seq)
+                        # z_pred: (B, T, D); z_next_target: (B, D) — compare final rollout step
                         seq_loss = (1 - torch.nn.functional.cosine_similarity(
-                            z_pred, z_next_target.detach(), dim=-1
+                            z_pred[:, -1], z_next_target.detach(), dim=-1
                         )).mean()
                         seq_loss.backward()
                         opt_lewm.step()
