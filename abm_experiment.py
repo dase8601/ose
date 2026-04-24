@@ -458,7 +458,7 @@ def write_report(save_dir: Path, results: dict, plot_paths: dict,
 def main():
     parser = argparse.ArgumentParser(description="A-B-M mode-switching experiment")
     parser.add_argument("--condition",
-                        choices=["autonomous", "fixed", "ppo_only", "mpc_only", "random"],
+                        choices=["autonomous", "fixed", "ppo_only", "mpc_only", "random", "planner_only"],
                         help="Single condition to run")
     parser.add_argument("--all",    action="store_true",
                         help="Run all conditions (Paper 3: autonomous+fixed+mpc_only+random for miniworld)")

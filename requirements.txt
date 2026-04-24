@@ -1,0 +1,9 @@
+torch>=2.1.0
+torchvision>=0.16.0
+numpy>=1.23
+matplotlib
+gymnasium>=0.29
+minigrid>=2.3
+imageio
+timm>=0.9
+tqdm
