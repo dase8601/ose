@@ -97,6 +97,21 @@ class Predictor(nn.Module):
         """
         return self.net(torch.cat([z, a_onehot], dim=-1))
 
+    def forward_sequence(self, z_seq: torch.Tensor, a_seq: torch.Tensor) -> torch.Tensor:
+        """
+        Roll out predictions step by step.
+        z_seq: (B, T, latent_dim)  — initial latent at each step
+        a_seq: (B, T, n_actions)
+        Returns: (B, T, latent_dim) — predicted next latents
+        """
+        B, T, _ = z_seq.shape
+        preds = []
+        z = z_seq[:, 0]
+        for t in range(T):
+            z = self.forward(z, a_seq[:, t])
+            preds.append(z.unsqueeze(1))
+        return torch.cat(preds, dim=1)
+
 
 # ---------------------------------------------------------------------------
 # TransformerPredictor — drop-in replacement with temporal context
