@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-04-22 — Add loop_mpc_doorkey.py: Phase 1 DoorKey planner-only scout
+
+### Why
+Phase 1 of the two-claim scientific plan: prove "world model + planning > RL" in isolation before testing autonomous System M. DoorKey chosen because it has a clean 42% PPO-only baseline to beat on a short-horizon task. Fixed schedule (80k observe → always ACT with CEM) removes System M as a confound entirely.
+
+### What
+- New file: `abm/loop_mpc_doorkey.py` — DoorKey-specific planner-only loop
+- Conditions: `planner_only` (CEM on LeWM) vs `random` baseline
+- Fixed schedule: observe_steps=80k, then always use CEM
+- LeWM: `latent_dim=256`, `predictor_type="mlp"`, `img_size=48`
+- CEM: `horizon=10`, `n_samples=512`, `n_elites=64`, `n_iters=5`, `distance="cosine"`
+- `GoalImageBuffer`: collects raw success frames (reward > 0), re-encodes at eval time
+- 30-episode eval every 5k steps, same metrics dict format as all other loops
+- `run_abm_loop = run_doorkey_mpc_loop` alias for `abm_experiment.py` dispatch
+
+### Threshold to promote
+`planner_only` success rate > 42% (PPO-only baseline on DoorKey)
+
+---
+
 ## 2026-04-22 — Rename abm/ files for agent clarity
 
 ### Why
