@@ -4,6 +4,7 @@ numpy>=1.23
 matplotlib
 gymnasium>=0.29
 minigrid>=2.3
+pygame>=2.4.0
 imageio
 timm>=0.9
 tqdm

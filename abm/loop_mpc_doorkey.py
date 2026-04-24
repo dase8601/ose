@@ -60,7 +60,8 @@ EP_MAX_STEPS      = 300         # DoorKey episode horizon
 def _make_doorkey_env(seed: int = 0):
     env = gymnasium.make("MiniGrid-DoorKey-6x6-v0", render_mode="rgb_array")
     env = RGBImgObsWrapper(env)
-    env = gymnasium.wrappers.ResizeObservation(env, (IMG_H, IMG_W))
+    # ResizeObservation requires Box obs space; RGBImgObsWrapper returns Dict.
+    # Resize is handled in _obs_to_tensor via F.interpolate instead.
     return env
 
 
@@ -74,7 +75,10 @@ def _obs_to_tensor(obs_dict, device: str) -> torch.Tensor:
     if imgs.ndim == 3:
         imgs = imgs[None]
     arr = imgs.astype(np.float32) / 255.0
-    return torch.from_numpy(arr).permute(0, 3, 1, 2).to(device)
+    t = torch.from_numpy(arr).permute(0, 3, 1, 2).to(device)
+    if t.shape[-2:] != (IMG_H, IMG_W):
+        t = torch.nn.functional.interpolate(t, size=(IMG_H, IMG_W), mode="bilinear", align_corners=False)
+    return t
 
 
 # ── Goal image buffer ──────────────────────────────────────────────────────
