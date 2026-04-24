@@ -354,7 +354,7 @@ def run_doorkey_mpc_loop(
                     mpc = CEMPlanner(
                         lewm.predictor,
                         n_actions=N_ACTIONS,
-                        horizon=10,
+                        horizon=30,
                         n_samples=512,
                         n_elites=64,
                         n_iters=5,
@@ -363,7 +363,7 @@ def run_doorkey_mpc_loop(
                     )
                     logger.info(
                         f"[{condition.upper()}] CEM planner ready "
-                        f"(H=10, samples=512, elites=64, iters=5) | "
+                        f"(H=30, samples=512, elites=64, iters=5) | "
                         f"goals in buffer: {len(goal_buf)}"
                     )
 
@@ -426,6 +426,18 @@ def run_doorkey_mpc_loop(
 
             last_done = dones
             obs = next_obs
+
+            # Continue training LeWM on ACT-phase experience — goal-directed
+            # transitions improve model quality in exactly the regions CEM needs.
+            if len(buf_lew) >= LEWM_WARMUP:
+                for _ in range(N_TRAIN_STEPS):
+                    obs_t, acts, obs_next = buf_lew.sample(LEWM_BATCH, device)
+                    opt_lewm.zero_grad()
+                    loss, info = lewm.loss(obs_t, acts, obs_next)
+                    loss.backward()
+                    opt_lewm.step()
+                ssl_loss_val = info["loss_total"]
+                ssl_ewa = 0.95 * ssl_ewa + 0.05 * ssl_loss_val
 
         # ── Periodic evaluation ────────────────────────────────────────────
         if env_step % EVAL_INTERVAL < n_envs:
