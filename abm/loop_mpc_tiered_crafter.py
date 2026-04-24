@@ -23,9 +23,9 @@ import torch
 import torch.optim as optim
 
 from .crafter_env import ACHIEVEMENTS, ACHIEVEMENT_TIERS, make_crafter_env, make_crafter_vec_env
-from .lewm import LeWM, ReplayBuffer, SequenceReplayBuffer
+from .world_model import LeWM, ReplayBuffer, SequenceReplayBuffer
 from .meta_controller import AutonomousSystemM, FixedSystemM, Mode
-from .mpc import CEMPlanner
+from .cem_planner import CEMPlanner
 
 logger = logging.getLogger(__name__)
 

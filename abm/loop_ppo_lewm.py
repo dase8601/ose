@@ -38,7 +38,7 @@ import gymnasium
 from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
 from minigrid.wrappers import RGBImgObsWrapper
 
-from .lewm import (LeWM, ReplayBuffer, SequenceReplayBuffer,
+from .world_model import (LeWM, ReplayBuffer, SequenceReplayBuffer,
                     VJEPAPredictor, VJEPAReplayBuffer)
 from .ppo import PPO, PPOAgent, RolloutBuffer
 from .meta_controller import AutonomousSystemM, FixedSystemM, Mode
@@ -707,14 +707,14 @@ def run_abm_loop(
 
     if use_vjepa:
         # ── V-JEPA 2.1 path (habitat) ──────────────────────────────────────
-        from .vjepa_encoder import VJEPAEncoder
+        from .dinov2_encoder import DINOv2Encoder
 
-        vjepa_enc = VJEPAEncoder(device=device)
+        vjepa_enc = DINOv2Encoder(device=device)
         feat_dim  = vjepa_enc.feature_dim   # 768 CLS token
         logger.info(f"[{condition.upper()}] DINOv2 ViT-B/14 loaded — feature_dim={feat_dim}")
 
         # MPC planner replaces PPO for miniworld (Yann: abandon RL → MPC)
-        from .mpc import CEMPlanner, GoalBuffer
+        from .cem_planner import CEMPlanner, GoalBuffer
         mpc        = None   # initialized after predictor is ready
         goal_buf   = GoalBuffer(max_size=100, device=device)
         agent      = None   # no PPO agent in miniworld MPC path
@@ -787,7 +787,7 @@ def run_abm_loop(
         # MPC components for LeWM path
         goal_buf = None
         if use_mpc:
-            from .mpc import GoalBuffer
+            from .cem_planner import GoalBuffer
             goal_buf = GoalBuffer(max_size=100, device=device)
 
         def encoder(obs_dict):
@@ -1029,7 +1029,7 @@ def run_abm_loop(
 
                 # Initialize MPC planner once predictor is warm
                 if use_vjepa and mpc is None and vjepa_pred is not None and len(buf_vjepa) >= LEWM_WARMUP:
-                    from .mpc import CEMPlanner
+                    from .cem_planner import CEMPlanner
                     mpc = CEMPlanner(
                         vjepa_pred, n_actions=n_actions,
                         horizon=15, n_samples=256, n_elites=32,
@@ -1105,7 +1105,7 @@ def run_abm_loop(
 
                 # Initialize CEM planner for DoorKey MPC once LeWM is warm
                 if use_mpc and mpc is None and len(buf_lew) >= LEWM_WARMUP:
-                    from .mpc import CEMPlanner
+                    from .cem_planner import CEMPlanner
                     mpc = CEMPlanner(
                         lewm.predictor, n_actions=n_actions,
                         horizon=12, n_samples=256, n_elites=32,

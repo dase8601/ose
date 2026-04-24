@@ -14,7 +14,7 @@ the discriminative CLS signal with redundant background patches.
 Output: 768-dim L2-normalized CLS token.
 
 Usage:
-    encoder = VJEPAEncoder(device="cuda")
+    encoder = DINOv2Encoder(device="cuda")
     z = encoder.encode(obs_dict)         # (B, 768)
     z = encoder.encode_single(obs_dict)  # (1, 768)
 """
@@ -24,7 +24,7 @@ import torch.nn.functional as F
 import numpy as np
 
 
-class VJEPAEncoder:
+class DINOv2Encoder:
     """
     Frozen DINOv2 ViT-B/14 encoder.
 

@@ -475,8 +475,8 @@ def main():
                         help="Use MPC planning instead of PPO in ACT mode")
     parser.add_argument("--no-rl", action="store_true",
                         help="Disable RL (PPO) — MPC only, no policy gradient")
-    parser.add_argument("--loop-module", default="abm.loop",
-                        help="Python module exposing run_abm_loop, e.g. abm.loop or abm.loop_acwm")
+    parser.add_argument("--loop-module", default="abm.loop_ppo_lewm",
+                        help="Python module exposing run_abm_loop, e.g. abm.loop_ppo_lewm, abm.loop_mpc_crafter, abm.loop_mpc_tiered_crafter")
     args = parser.parse_args()
 
     if args.device == "auto":

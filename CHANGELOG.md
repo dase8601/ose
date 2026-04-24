@@ -1,5 +1,25 @@
 # Changelog
 
+## 2026-04-22 — Rename abm/ files for agent clarity
+
+### Why
+File names were ambiguous: `loop.py` gave no hint it was PPO-based, `loop_acwm.py` used an internal acronym, `vjepa_encoder.py` actually ran DINOv2 (V-JEPA was abandoned after feature collapse). Renamed all 6 files so any agent reading the codebase immediately knows what each does.
+
+### Renames
+- `abm/loop.py` → `abm/loop_ppo_lewm.py` (PPO on LeWM features, all envs)
+- `abm/loop_acwm.py` → `abm/loop_mpc_crafter.py` (pure CEM planner, no PPO, Crafter-only)
+- `abm/loop_acwm_tiered.py` → `abm/loop_mpc_tiered_crafter.py` (tiered+sticky goal MPC scout)
+- `abm/vjepa_encoder.py` → `abm/dinov2_encoder.py` (DINOv2 ViT-B/14, not V-JEPA)
+- `abm/mpc.py` → `abm/cem_planner.py` (Cross-Entropy Method planner + GoalBuffer)
+- `abm/lewm.py` → `abm/world_model.py` (LeWM world model, CNN encoder, replay buffers)
+
+### Also
+- `VJEPAEncoder` class renamed to `DINOv2Encoder` in `dinov2_encoder.py`
+- All internal imports updated across all loop files
+- `abm_experiment.py` `--loop-module` default updated to `abm.loop_ppo_lewm`
+
+---
+
 ## 2026-04-20 — MPC+RL hybrid, bug fixes from MacBook test, RunPod prep
 
 ### Why
