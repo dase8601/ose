@@ -27,7 +27,51 @@ Usage:
 """
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
+
+
+class EBMCostHead(nn.Module):
+    """
+    Learned energy function E(z, z_goal) → scalar cost for CEM planning.
+
+    Low energy  = state is close to goal (CEM prefers low-cost sequences).
+    High energy = state is far from goal.
+
+    Trained contrastively:
+      Positive pairs: (z_success, z_goal) from GoalImageBuffer — low energy
+      Negative pairs: (z_random,  z_goal) from replay buffer  — high energy
+
+    Loss: max(0, margin + E_pos - E_neg)  [margin-ranking / hinge loss]
+
+    Replaces cosine distance in CEMPlanner._rollout once trained.
+    Directly implements LeCun's energy-based objective-driven AI cost module.
+    """
+
+    def __init__(self, latent_dim: int = 256, hidden: int = 256):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(latent_dim * 2, hidden),
+            nn.ReLU(),
+            nn.Linear(hidden, hidden // 2),
+            nn.ReLU(),
+            nn.Linear(hidden // 2, 1),
+        )
+
+    def forward(self, z: torch.Tensor, z_goal: torch.Tensor) -> torch.Tensor:
+        """z, z_goal: (B, D) → (B,) energy scalars"""
+        return self.net(torch.cat([z, z_goal], dim=-1)).squeeze(-1)
+
+    def contrastive_loss(
+        self,
+        z_pos:  torch.Tensor,   # (B, D) — success-adjacent states
+        z_neg:  torch.Tensor,   # (B, D) — random states
+        z_goal: torch.Tensor,   # (B, D) — goal encodings
+        margin: float = 1.0,
+    ) -> torch.Tensor:
+        e_pos = self.forward(z_pos,  z_goal)
+        e_neg = self.forward(z_neg,  z_goal)
+        return torch.clamp(margin + e_pos - e_neg, min=0).mean()
 
 
 class CEMPlanner:
@@ -68,6 +112,11 @@ class CEMPlanner:
         self.n_iters   = n_iters
         self.device    = device
         self.distance  = distance
+        self.ebm       = None   # set via set_ebm() once trained
+
+    def set_ebm(self, ebm: EBMCostHead) -> None:
+        """Activate learned EBM cost in place of cosine distance."""
+        self.ebm = ebm
 
     @torch.no_grad()
     def _rollout(
@@ -87,7 +136,9 @@ class CEMPlanner:
             z        = self.predictor(z, a_onehot)
 
         z_goal_exp = z_goal.unsqueeze(1).expand(B, K, feat_dim).reshape(B * K, feat_dim)
-        if self.distance == "l2":
+        if self.ebm is not None:
+            dist = self.ebm(z, z_goal_exp).reshape(B, K)
+        elif self.distance == "l2":
             dist = (z - z_goal_exp).pow(2).sum(dim=-1).reshape(B, K)
         else:
             cos_sim = F.cosine_similarity(z, z_goal_exp, dim=-1)

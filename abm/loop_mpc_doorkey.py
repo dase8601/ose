@@ -33,7 +33,7 @@ import torch.optim as optim
 from minigrid.wrappers import RGBImgObsWrapper
 
 from .world_model import LeWM, ReplayBuffer, SequenceReplayBuffer
-from .cem_planner import CEMPlanner
+from .cem_planner import CEMPlanner, EBMCostHead
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,10 @@ GOAL_REFRESH_STEPS = 64
 N_TRAIN_STEPS     = 4
 DEFAULT_OBSERVE   = 80_000      # fixed OBSERVE budget before always-ACT
 EP_MAX_STEPS      = 300         # DoorKey episode horizon
+EBM_MIN_GOALS     = 5           # min goal images before EBM training starts
+EBM_WARMUP_STEPS  = 500         # EBM training steps before activating in CEM
+EBM_LR            = 3e-4
+EBM_BATCH         = 32
 
 
 # ── Environment helpers ────────────────────────────────────────────────────
@@ -264,6 +268,12 @@ def run_doorkey_mpc_loop(
     mpc: Optional[CEMPlanner] = None
     goal_buf = GoalImageBuffer(capacity=GOAL_CAPACITY)
 
+    # EBM cost head — replaces cosine distance in CEM once trained
+    ebm = EBMCostHead(latent_dim=LATENT_DIM).to(device)
+    opt_ebm = optim.Adam(ebm.parameters(), lr=EBM_LR)
+    ebm_train_count = 0
+    ebm_active = False
+
     def encoder_fn(obs_input):
         if isinstance(obs_input, dict):
             return lewm.encode(_obs_to_tensor(obs_input, device))
@@ -360,6 +370,27 @@ def run_doorkey_mpc_loop(
                     else 0.95 * ssl_ewa + 0.05 * ssl_loss_val
                 )
 
+                # Train EBM once we have enough goal images
+                if len(goal_buf) >= EBM_MIN_GOALS and len(buf_lew) >= EBM_BATCH * 2:
+                    pos_imgs  = goal_buf.sample(EBM_BATCH)
+                    goal_imgs = goal_buf.sample(EBM_BATCH)
+                    neg_obs, _, _ = buf_lew.sample(EBM_BATCH, device)
+                    with torch.no_grad():
+                        z_pos  = lewm.encode(torch.from_numpy(
+                            pos_imgs.astype(np.float32)/255.0).permute(0,3,1,2).to(device))
+                        z_goal_ebm = lewm.encode(torch.from_numpy(
+                            goal_imgs.astype(np.float32)/255.0).permute(0,3,1,2).to(device))
+                        z_neg  = lewm.encode(neg_obs)
+                    opt_ebm.zero_grad()
+                    ebm_loss_val = ebm.contrastive_loss(z_pos, z_neg, z_goal_ebm)
+                    ebm_loss_val.backward()
+                    opt_ebm.step()
+                    ebm_train_count += 1
+                    if ebm_train_count >= EBM_WARMUP_STEPS and not ebm_active and mpc is not None:
+                        mpc.set_ebm(ebm)
+                        ebm_active = True
+                        logger.info(f"[{condition.upper()}] EBM activated — replacing cosine distance in CEM")
+
                 # Init CEM as soon as LeWM is warm — use it the moment OBSERVE ends
                 if mpc is None:
                     mpc = CEMPlanner(
@@ -450,12 +481,34 @@ def run_doorkey_mpc_loop(
                 ssl_loss_val = info["loss_total"]
                 ssl_ewa = 0.95 * ssl_ewa + 0.05 * ssl_loss_val
 
+                # EBM training continues during ACT on goal-directed transitions
+                if len(goal_buf) >= EBM_MIN_GOALS and len(buf_lew) >= EBM_BATCH * 2:
+                    pos_imgs  = goal_buf.sample(EBM_BATCH)
+                    goal_imgs = goal_buf.sample(EBM_BATCH)
+                    neg_obs, _, _ = buf_lew.sample(EBM_BATCH, device)
+                    with torch.no_grad():
+                        z_pos  = lewm.encode(torch.from_numpy(
+                            pos_imgs.astype(np.float32)/255.0).permute(0,3,1,2).to(device))
+                        z_goal_ebm = lewm.encode(torch.from_numpy(
+                            goal_imgs.astype(np.float32)/255.0).permute(0,3,1,2).to(device))
+                        z_neg  = lewm.encode(neg_obs)
+                    opt_ebm.zero_grad()
+                    ebm_loss_val = ebm.contrastive_loss(z_pos, z_neg, z_goal_ebm)
+                    ebm_loss_val.backward()
+                    opt_ebm.step()
+                    ebm_train_count += 1
+                    if ebm_train_count >= EBM_WARMUP_STEPS and not ebm_active:
+                        mpc.set_ebm(ebm)
+                        ebm_active = True
+                        logger.info(f"[{condition.upper()}] EBM activated — replacing cosine distance in CEM")
+
         # ── Heartbeat (every 1000 outer iters) ────────────────────────────
         if (env_step // n_envs) % 1000 == 0 and env_step > 0:
             logger.info(
                 f"[{condition.upper()}] heartbeat step={env_step} | "
                 f"buf={len(buf_lew)} | goals={len(goal_buf)} | "
-                f"ssl={ssl_ewa or 0.0:.4f} | {time.time()-t0:.0f}s"
+                f"ssl={ssl_ewa or 0.0:.4f} | ebm={'ON' if ebm_active else f'training({ebm_train_count})'} | "
+                f"{time.time()-t0:.0f}s"
             )
 
         # ── Periodic evaluation ────────────────────────────────────────────
