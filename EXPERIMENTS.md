@@ -59,9 +59,45 @@ H=10 is too short for DoorKey's multi-step structure (navigate to key → pick u
 | Train during ACT | **Yes** |
 | Device | A100 |
 
+**Result:** 0.0% success throughout all 120k ACT steps  
+**Goals collected:** 23 by step 200k (vs 19 in Run 1 — more goals, same outcome)  
+**ssl_ewa at OBSERVE end:** 0.0675 (well converged)  
+**ssl_ewa during ACT:** dropped to 0.028 then stabilized ~0.04 — world model kept learning on goal-directed transitions as expected  
+**Peak success:** 0.0%
+
+**Why it failed:**  
+Cosine distance in latent space is not a good cost function for CEM. The LeWM encoder was trained to predict next states, not to make "closeness to goal" meaningful in its latent geometry. CEM optimized the wrong objective — minimizing cosine distance to z_goal does not correlate with task progress on DoorKey.
+
+**What we changed for Run 3:**  
+- Added EBM cost head: `E(z, z_goal) → scalar` trained contrastively from goal buffer vs replay buffer  
+- EBM replaces cosine distance in CEM once trained for 500 steps with ≥5 goals  
+- Directly implements LeCun's energy-based objective-driven AI cost module  
+- EBM trains in both OBSERVE and ACT phases — improves continuously
+
+---
+
+### Run 3 — 2026-04-25
+
+| Parameter | Value |
+|-----------|-------|
+| Condition | planner_only |
+| Steps | 200k |
+| n_envs | 16 |
+| observe_steps | 80k |
+| CEM horizon | 30 |
+| CEM samples | 512 |
+| CEM elites | 64 |
+| CEM iters | 5 |
+| latent_dim | 256 |
+| Train during ACT | Yes |
+| Cost function | **EBM** (contrastive, replaces cosine) |
+| EBM min goals | 5 |
+| EBM warmup | 500 steps |
+| Device | RTX 4090 |
+
 **Result:** _in progress_  
 **Goals collected:** —  
-**ssl_ewa at OBSERVE end:** —  
+**EBM activated at step:** —  
 **Peak success:** —  
 **Notes:** —
 
@@ -84,7 +120,8 @@ _Not started._
 | Date | Run | Condition | Env | Steps | Peak | Final | Notes |
 |------|-----|-----------|-----|-------|------|-------|-------|
 | 2026-04-24 | DoorKey R1 | planner_only | DoorKey | 200k | 0% | 0% | H=10 too short |
-| 2026-04-24 | DoorKey R2 | planner_only | DoorKey | 200k | — | — | H=30, train during ACT |
+| 2026-04-25 | DoorKey R2 | planner_only | DoorKey | 200k | 0% | 0% | H=30, train during ACT — cosine dist not sufficient |
+| 2026-04-25 | DoorKey R3 | planner_only | DoorKey | 200k | — | — | EBM cost head replaces cosine |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
