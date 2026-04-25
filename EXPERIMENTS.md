@@ -96,9 +96,10 @@ Cosine distance in latent space is not a good cost function for CEM. The LeWM en
 | Device | RTX 4090 |
 
 **Result:** 0.0% success throughout all 120k ACT steps  
-**Goals collected:** ~23 by step 200k (same sparsity as Run 2 — random walk baseline)  
-**EBM activated at step:** ~30k (500 gradient steps with ≥5 goals)  
-**ssl_ewa at OBSERVE end:** ~0.068 (well converged)  
+**Goals collected:** 19 by step 200k (18 at step 190k, last one at step 200k)  
+**EBM activated:** confirmed ON by step 192k heartbeat  
+**ssl_ewa final:** 0.0309 (end of ACT) | 0.0675 (OBSERVE end)  
+**Total wall time:** 16,263s (~4.5 hrs on RTX 4090)  
 **Peak success:** 0.0%
 
 **Why it failed:**  
@@ -220,7 +221,7 @@ _Not started._
 |------|-----|-----------|-----|-------|------|-------|-------|
 | 2026-04-24 | DoorKey R1 | planner_only | DoorKey | 200k | 0% | 0% | H=10 too short |
 | 2026-04-25 | DoorKey R2 | planner_only | DoorKey | 200k | 0% | 0% | H=30, train during ACT — cosine dist not sufficient |
-| 2026-04-25 | DoorKey R3 | planner_only | DoorKey | 200k | 0% | 0% | EBM active at ~30k — WM OOD, too few goal images |
+| 2026-04-25 | DoorKey R3 | planner_only | DoorKey | 200k | 0% | 0% | EBM ON by 192k, 19 goals, 4.5hr — WM OOD, too few positives |
 | — | DoorKey R4 | curiosity_observe | DoorKey | 200k | — | — | Curiosity OBSERVE — pending |
 | — | DoorKey R5 | her_goals | DoorKey | 200k | — | — | HER EBM signal — pending |
 | — | DoorKey R6 | subgoals | DoorKey | 200k | — | — | 3-stage subgoals + seeding — pending |
