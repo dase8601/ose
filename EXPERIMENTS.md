@@ -95,11 +95,110 @@ Cosine distance in latent space is not a good cost function for CEM. The LeWM en
 | EBM warmup | 500 steps |
 | Device | RTX 4090 |
 
-**Result:** _in progress_  
-**Goals collected:** —  
-**EBM activated at step:** —  
-**Peak success:** —  
-**Notes:** —
+**Result:** 0.0% success throughout all 120k ACT steps  
+**Goals collected:** ~23 by step 200k (same sparsity as Run 2 — random walk baseline)  
+**EBM activated at step:** ~30k (500 gradient steps with ≥5 goals)  
+**ssl_ewa at OBSERVE end:** ~0.068 (well converged)  
+**Peak success:** 0.0%
+
+**Why it failed:**  
+EBM was trained on ~23 goal images — all from the same tiny region of state space (the exit). The world model was trained entirely on random-walk transitions and has never seen key pickup or door unlock sequences. So when CEM imagines H=30-step futures, it rolls through a model that cannot simulate the task-critical transitions. Even with a correctly-shaped EBM cost, CEM can't find the goal because the imagined future is wrong.
+
+**Root cause (confirmed):** Train-test distribution gap in the world model. The model is trained on random-walk data; CEM evaluates goal-directed plans. These distributions don't overlap enough for the EBM to be meaningful in the regions CEM actually explores.
+
+**What we changed for Runs 4–7:**  
+Four separate diagnostic runs targeting different hypotheses about the failure:
+
+---
+
+### Run 4 — (next) curiosity_observe
+
+**File:** `abm/loop_mpc_doorkey_curiosity.py`  
+**Loop module:** `abm.loop_mpc_doorkey_curiosity`  
+**Condition:** `curiosity_observe`
+
+| Parameter | Value |
+|-----------|-------|
+| OBSERVE policy | **Curiosity (novelty-maximizing)** |
+| Everything else | Identical to Run 3 |
+
+**Hypothesis:** World model never sees key/door transitions because random walk almost never triggers them (~0.0015% per step). Curiosity replaces random walk with Plan2Explore-style novelty — for each env, run all 7 actions through the predictor, pick the one with the most novel predicted next-latent. This should actively steer exploration toward rare transitions the model doesn't know yet.
+
+---
+
+### Run 5 — (next) her_goals
+
+**File:** `abm/loop_mpc_doorkey_her.py`  
+**Loop module:** `abm.loop_mpc_doorkey_her`  
+**Condition:** `her_goals`
+
+| Parameter | Value |
+|-----------|-------|
+| EBM signal | **Standard + HER** |
+| HER buffer | All episode-end states (4k capacity) |
+| Everything else | Identical to Run 3 |
+
+**Hypothesis:** EBM had only ~23 positive training pairs in 200k steps. HER relabeling treats every episode-end state as "a goal achieved for itself" — E(z_end, z_end) should be low, E(z_random, z_end) should be high. This gives thousands of positive pairs per run instead of 23.
+
+---
+
+### Run 6 — (next) subgoals
+
+**File:** `abm/loop_mpc_doorkey_subgoals.py`  
+**Loop module:** `abm.loop_mpc_doorkey_subgoals`  
+**Condition:** `subgoals`
+
+| Parameter | Value |
+|-----------|-------|
+| Goal structure | **3-stage: key → door → exit** |
+| Pre-seeding | 200 random episodes before OBSERVE |
+| EBM buffers | key_buf + door_buf + goal_buf (separate) |
+| Stage detection | live from env.unwrapped.carrying + grid scan |
+| Everything else | Identical to Run 3 |
+
+**Hypothesis:** DoorKey's full task is 30–80 steps. A single CEM invocation at H=30 can't bridge the full distance. Breaking it into three separately-tractable stages lets CEM solve each sub-problem with a realistic horizon. The EBM is trained on subgoal images, not just final exits.
+
+---
+
+### Run 7 — (next) curiosity_her
+
+**File:** `abm/loop_mpc_doorkey_curiosity_her.py`  
+**Loop module:** `abm.loop_mpc_doorkey_curiosity_her`  
+**Condition:** `curiosity_her`
+
+| Parameter | Value |
+|-----------|-------|
+| OBSERVE policy | **Curiosity** (from Run 4) |
+| EBM signal | **Standard + HER** (from Run 5) |
+| Everything else | Identical to Run 3 |
+
+**Hypothesis:** Both problems (OOD world model + sparse EBM positives) compound. If neither Run 4 nor Run 5 alone succeeds, Run 7 tests whether fixing both simultaneously is needed.
+
+---
+
+**RunPod commands (run in order):**
+
+```bash
+# Run 4
+python abm_experiment.py --loop-module abm.loop_mpc_doorkey_curiosity \
+  --condition curiosity_observe --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 80000
+
+# Run 5
+python abm_experiment.py --loop-module abm.loop_mpc_doorkey_her \
+  --condition her_goals --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 80000
+
+# Run 6
+python abm_experiment.py --loop-module abm.loop_mpc_doorkey_subgoals \
+  --condition subgoals --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 80000
+
+# Run 7
+python abm_experiment.py --loop-module abm.loop_mpc_doorkey_curiosity_her \
+  --condition curiosity_her --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 80000
+```
 
 ---
 
@@ -121,7 +220,11 @@ _Not started._
 |------|-----|-----------|-----|-------|------|-------|-------|
 | 2026-04-24 | DoorKey R1 | planner_only | DoorKey | 200k | 0% | 0% | H=10 too short |
 | 2026-04-25 | DoorKey R2 | planner_only | DoorKey | 200k | 0% | 0% | H=30, train during ACT — cosine dist not sufficient |
-| 2026-04-25 | DoorKey R3 | planner_only | DoorKey | 200k | — | — | EBM cost head replaces cosine |
+| 2026-04-25 | DoorKey R3 | planner_only | DoorKey | 200k | 0% | 0% | EBM active at ~30k — WM OOD, too few goal images |
+| — | DoorKey R4 | curiosity_observe | DoorKey | 200k | — | — | Curiosity OBSERVE — pending |
+| — | DoorKey R5 | her_goals | DoorKey | 200k | — | — | HER EBM signal — pending |
+| — | DoorKey R6 | subgoals | DoorKey | 200k | — | — | 3-stage subgoals + seeding — pending |
+| — | DoorKey R7 | curiosity_her | DoorKey | 200k | — | — | Curiosity + HER combined — pending |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
