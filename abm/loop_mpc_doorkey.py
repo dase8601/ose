@@ -48,7 +48,7 @@ LEWM_WARMUP       = 500
 REPLAY_CAPACITY   = 100_000
 GOAL_CAPACITY     = 1_024
 EVAL_INTERVAL     = 5_000
-EVAL_N_EPS        = 30
+EVAL_N_EPS        = 10
 GOAL_REFRESH_STEPS = 64
 N_TRAIN_STEPS     = 4
 DEFAULT_OBSERVE   = 80_000      # fixed OBSERVE budget before always-ACT
@@ -68,6 +68,17 @@ def _make_doorkey_env(seed: int = 0):
 def _make_doorkey_vec_env(n_envs: int, seed: int = 0):
     fns = [lambda i=i: _make_doorkey_env(seed=seed + i) for i in range(n_envs)]
     return gymnasium.vector.SyncVectorEnv(fns)
+
+
+def _resize_imgs(imgs: np.ndarray) -> np.ndarray:
+    """Resize (N, H, W, 3) or (H, W, 3) uint8 to (N, IMG_H, IMG_W, 3) uint8."""
+    if imgs.ndim == 3:
+        imgs = imgs[None]
+    if imgs.shape[1] == IMG_H and imgs.shape[2] == IMG_W:
+        return imgs
+    t = torch.from_numpy(imgs.astype(np.float32) / 255.0).permute(0, 3, 1, 2)
+    t = torch.nn.functional.interpolate(t, size=(IMG_H, IMG_W), mode="bilinear", align_corners=False)
+    return (t.permute(0, 2, 3, 1).numpy() * 255.0).astype(np.uint8)
 
 
 def _obs_to_tensor(obs_dict, device: str) -> torch.Tensor:
@@ -293,16 +304,16 @@ def run_doorkey_mpc_loop(
             # ── OBSERVE: random actions, train LeWM ───────────────────────
             mode_str = "OBSERVE"
             actions = envs.action_space.sample()
-            obs_imgs = obs["image"].copy()
+            obs_imgs = _resize_imgs(obs["image"].copy())
             next_obs, rewards, terms, truncs, infos = envs.step(actions)
-            next_imgs = next_obs["image"].copy()
+            next_imgs = _resize_imgs(next_obs["image"].copy())
 
             # Gymnasium vector: recover true final obs on episode end
             final_mask = infos.get("_final_observation", np.zeros(n_envs, dtype=bool))
             if final_mask.any() and "final_observation" in infos:
                 for i in range(n_envs):
                     if final_mask[i]:
-                        next_imgs[i] = infos["final_observation"]["image"][i]
+                        next_imgs[i] = _resize_imgs(infos["final_observation"]["image"][i])
 
             dones = terms | truncs
             for i in range(n_envs):
@@ -397,15 +408,15 @@ def run_doorkey_mpc_loop(
             else:
                 actions_np = envs.action_space.sample()
 
-            obs_imgs = obs["image"].copy()
+            obs_imgs = _resize_imgs(obs["image"].copy())
             next_obs, rewards, terms, truncs, infos = envs.step(actions_np)
-            next_imgs = next_obs["image"].copy()
+            next_imgs = _resize_imgs(next_obs["image"].copy())
 
             final_mask = infos.get("_final_observation", np.zeros(n_envs, dtype=bool))
             if final_mask.any() and "final_observation" in infos:
                 for i in range(n_envs):
                     if final_mask[i]:
-                        next_imgs[i] = infos["final_observation"]["image"][i]
+                        next_imgs[i] = _resize_imgs(infos["final_observation"]["image"][i])
 
             dones = terms | truncs
             ep_ret += rewards
@@ -438,6 +449,14 @@ def run_doorkey_mpc_loop(
                     opt_lewm.step()
                 ssl_loss_val = info["loss_total"]
                 ssl_ewa = 0.95 * ssl_ewa + 0.05 * ssl_loss_val
+
+        # ── Heartbeat (every 1000 outer iters) ────────────────────────────
+        if (env_step // n_envs) % 1000 == 0 and env_step > 0:
+            logger.info(
+                f"[{condition.upper()}] heartbeat step={env_step} | "
+                f"buf={len(buf_lew)} | goals={len(goal_buf)} | "
+                f"ssl={ssl_ewa or 0.0:.4f} | {time.time()-t0:.0f}s"
+            )
 
         # ── Periodic evaluation ────────────────────────────────────────────
         if env_step % EVAL_INTERVAL < n_envs:
