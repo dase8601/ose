@@ -125,6 +125,13 @@ Four separate diagnostic runs targeting different hypotheses about the failure:
 
 **Hypothesis:** World model never sees key/door transitions because random walk almost never triggers them (~0.0015% per step). Curiosity replaces random walk with Plan2Explore-style novelty — for each env, run all 7 actions through the predictor, pick the one with the most novel predicted next-latent. This should actively steer exploration toward rare transitions the model doesn't know yet.
 
+**Result:** 0.0% success throughout all 120k ACT steps  
+**act_steps:** 120,000 (60% of total)  
+**Peak success:** 0.0%
+
+**Why it failed:**  
+Curiosity improved exploration diversity but the planning horizon (H=30) remained the bottleneck. Even with a better-trained world model, 30-step CEM rollouts compound prediction errors to the point where CEM cannot distinguish good action sequences from noise. Exploration quality is not the binding constraint — model accuracy over long horizons is.
+
 ---
 
 ### Run 5 — (next) her_goals
@@ -222,10 +229,11 @@ _Not started._
 | 2026-04-24 | DoorKey R1 | planner_only | DoorKey | 200k | 0% | 0% | H=10 too short |
 | 2026-04-25 | DoorKey R2 | planner_only | DoorKey | 200k | 0% | 0% | H=30, train during ACT — cosine dist not sufficient |
 | 2026-04-25 | DoorKey R3 | planner_only | DoorKey | 200k | 0% | 0% | EBM ON by 192k, 19 goals, 4.5hr — WM OOD, too few positives |
-| — | DoorKey R4 | curiosity_observe | DoorKey | 200k | — | — | Curiosity OBSERVE — pending |
+| 2026-04-26 | DoorKey R4 | curiosity_observe | DoorKey | 200k | 0% | 0% | Curiosity alone insufficient — WM horizon still the bottleneck |
 | — | DoorKey R5 | her_goals | DoorKey | 200k | — | — | HER EBM signal — pending |
 | — | DoorKey R6 | subgoals | DoorKey | 200k | — | — | 3-stage subgoals + seeding — pending |
 | — | DoorKey R7 | curiosity_her | DoorKey | 200k | — | — | Curiosity + HER combined — pending |
+| — | DoorKey R8 | short_horizon | DoorKey | 200k | — | — | H=5 + subgoals + curiosity + HER — pending |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
