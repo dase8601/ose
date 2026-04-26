@@ -348,6 +348,76 @@ cd /workspace/ose && git pull && python abm_experiment.py \
 
 ---
 
+### Run 12 — 2026-04-26 — dinov2_frozen
+
+**File:** `abm/loop_mpc_doorkey_run12.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run12`  
+**Condition:** `dinov2_frozen`
+
+| Parameter | Value |
+|-----------|-------|
+| Encoder | Frozen DINOv2 ViT-B/14 (timm, 86M params, 768-dim CLS token, L2-norm) |
+| Discrimination test | cross-seed cos_sim=0.9699 — WARNING > 0.95, continued anyway |
+| Replay | FeatureReplayBuffer (stores 768-dim features, not raw images) |
+| Predictor | FeaturePredictor: MLP 768→1024→768, LayerNorm+GELU, cosine loss |
+| EBM | EBMCostHead(768), contrastive hinge, 3 signals + post_door_neg |
+| seed_buf | 20k protected FeatureReplayBuffer (seeded DINOv2 features) |
+| post_door_neg_buf | 5k GoalFeatureBuffer of right-half non-exit features |
+| CEM horizon | 8 |
+| Goal structure | 3-stage subgoals (key→door→exit) |
+| OBSERVE policy | Curiosity |
+
+**Result:** peak=20.0%, final=0.0% | 7228s  
+Final buffer state: key=632 door=547 goal=228 post_neg=5000 her=537  
+First non-zero result across all 12 runs — confirms pretrained encoder hypothesis. Door opened 547 times (stage 1+2 working well), goal grew to 228 (agent reaches exit occasionally in stage 3). Peak 20% did not hold — success rate was noisy (10% then 0% for many evals, then 20% peak). The 0.9699 discrimination warning may explain the noise: DINOv2 features for different DoorKey states are nearly identical, making the EBM energy landscape flat and CEM guidance unreliable.
+
+**RunPod command:**
+
+```bash
+cd /workspace && git clone https://github.com/dase8601/ose.git && cd ose && pip install -r requirements.txt && python abm_experiment.py \
+  --loop-module abm.loop_mpc_doorkey_run12 \
+  --condition dinov2_frozen \
+  --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 80000
+```
+
+---
+
+### Run 13 — 2026-04-26 — vjepa2_frozen
+
+**File:** `abm/loop_mpc_doorkey_run13.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run13`  
+**Condition:** `vjepa2_frozen`
+
+| Parameter | Value |
+|-----------|-------|
+| Encoder | Frozen V-JEPA 2.1 ViT-Base-384 (86M params, 768-dim mean-pooled patch tokens, L2-norm) |
+| Input shape | (B, 3, 1, 384, 384) — T=1 single frame |
+| Replay | FeatureReplayBuffer (stores 768-dim features) |
+| Predictor | FeaturePredictor: MLP 768→1024→768, LayerNorm+GELU, cosine loss |
+| EBM | EBMCostHead(768), same as Run 12 |
+| seed_buf | 20k protected FeatureReplayBuffer |
+| post_door_neg_buf | 5k GoalFeatureBuffer |
+| CEM horizon | 8 |
+| Goal structure | 3-stage subgoals |
+| OBSERVE policy | Curiosity |
+
+**Hypothesis:** V-JEPA 2.1 trained on video with a JEPA objective (predict future latents) — more theoretically aligned with our transition predictor than DINOv2's static-image training. Features should be sensitive to motion and state change, giving CEM a meaningful gradient to plan toward the exit.
+
+**Mid-run signal (step 96k, ~15k into ACT):** success=20.0%, goal=208 (8 new goals in 15k ACT steps), door=248, post_neg=5000 (capped), pred_ewa≈0.0000 — predictor loss near zero, V-JEPA features are smooth/predictable. Still running.
+
+**RunPod command:**
+
+```bash
+cd /workspace && git clone https://github.com/dase8601/ose.git && cd ose && pip install -r requirements.txt einops && python abm_experiment.py \
+  --loop-module abm.loop_mpc_doorkey_run13 \
+  --condition vjepa2_frozen \
+  --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 80000
+```
+
+---
+
 ## Phase 2 — Prove autonomous System M > fixed switching (Crafter)
 
 _Not started. Begins only after Phase 1 planner proves > 42% on DoorKey._
@@ -375,7 +445,8 @@ _Not started._
 | 2026-04-26 | DoorKey R9 | scripted_seed | DoorKey | 200k | 0% | 0% | door=211✅ goal=200❌frozen — seeder never wrote to buf_lew, WM still OOD |
 | 2026-04-26 | DoorKey R10 | protected_seed | DoorKey | 200k | 0% | 0% | door=213✅ 13 openings — WM fixed, EBM stage-2 energy wrong in right half |
 | 2026-04-26 | DoorKey R11 | post_door_neg | DoorKey | 200k | 0% | 0% | door=223✅ goal=200❌frozen — EBM ON, post_neg=4318, CNN encoder OOD confirmed |
-| — | DoorKey R10 | protected_seed | DoorKey | 200k | — | — | 50% seed_buf in every WM batch — post-door data permanent — pending |
+| 2026-04-26 | DoorKey R12 | dinov2_frozen | DoorKey | 200k | 20% | 0% | First non-zero — DINOv2 cos_sim=0.9699 warning, noisy success, goal=228 |
+| 2026-04-26 | DoorKey R13 | vjepa2_frozen | DoorKey | 200k | — | — | V-JEPA 2.1 — 20% at step 95k (15k into ACT), still running |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
