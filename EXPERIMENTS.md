@@ -332,6 +332,10 @@ Root cause: stage-2 EBM energy landscape is wrong inside the right half. EBM neg
 
 **Expected signal:** `post_door_neg=~800` in seeder log; goal grows past 200 during ACT.
 
+**Result:** FAILED — peak=0.0%, final=0.0% | 7050s  
+Final buffer state: key=319 door=223 goal=200 post_neg=4318 her=528 | EBM=ON  
+The EBM activated and post_door_neg grew to 4318 during ACT — the signal was there. But goal stayed frozen at the seeded 200. Door opened 223 times (more than any prior run), agent navigated correctly through stages 1 and 2, but CEM still failed to plan from door-open state to exit. Root cause: the CNN encoder (LeWM) cannot produce a latent space where CEM-predicted trajectories map meaningfully to actual DoorKey dynamics — the issue is encoder quality, not the EBM signals. This run confirms the architecture is correct but requires a better encoder, motivating Runs 12 (DINOv2) and 13 (V-JEPA 2.1).
+
 **RunPod command:**
 
 ```bash
@@ -370,7 +374,7 @@ _Not started._
 | 2026-04-26 | DoorKey R8 | short_horizon | DoorKey | 200k | 0% | 0% | H=5: key✅ door❌frozen — H too short for stage 1 (needs 6-8 steps) |
 | 2026-04-26 | DoorKey R9 | scripted_seed | DoorKey | 200k | 0% | 0% | door=211✅ goal=200❌frozen — seeder never wrote to buf_lew, WM still OOD |
 | 2026-04-26 | DoorKey R10 | protected_seed | DoorKey | 200k | 0% | 0% | door=213✅ 13 openings — WM fixed, EBM stage-2 energy wrong in right half |
-| — | DoorKey R11 | post_door_neg | DoorKey | 200k | — | — | right-half non-exit negatives for stage-2 EBM — pending |
+| 2026-04-26 | DoorKey R11 | post_door_neg | DoorKey | 200k | 0% | 0% | door=223✅ goal=200❌frozen — EBM ON, post_neg=4318, CNN encoder OOD confirmed |
 | — | DoorKey R10 | protected_seed | DoorKey | 200k | — | — | 50% seed_buf in every WM batch — post-door data permanent — pending |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
