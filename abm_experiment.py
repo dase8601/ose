@@ -461,7 +461,8 @@ def main():
                         choices=["autonomous", "fixed", "ppo_only", "mpc_only", "random",
                                  "planner_only", "curiosity_observe", "her_goals",
                                  "subgoals", "curiosity_her", "short_horizon", "scripted_seed",
-                                 "protected_seed", "post_door_neg", "dinov2_frozen"],
+                                 "protected_seed", "post_door_neg", "dinov2_frozen",
+                                 "vjepa2_frozen"],
                         help="Single condition to run")
     parser.add_argument("--all",    action="store_true",
                         help="Run all conditions (Paper 3: autonomous+fixed+mpc_only+random for miniworld)")
@@ -479,7 +480,7 @@ def main():
     parser.add_argument("--no-rl", action="store_true",
                         help="Disable RL (PPO) — MPC only, no policy gradient")
     parser.add_argument("--loop-module", default="abm.loop_ppo_lewm",
-                        help="Python module exposing run_abm_loop, e.g. abm.loop_ppo_lewm, abm.loop_mpc_crafter, abm.loop_mpc_tiered_crafter")
+                        help="Python module exposing run_abm_loop, e.g. abm.loop_ppo_lewm, abm.loop_mpc_crafter, abm.loop_mpc_tiered_crafter, abm.loop_mpc_doorkey_run12, abm.loop_mpc_doorkey_run13")
     args = parser.parse_args()
 
     if args.device == "auto":

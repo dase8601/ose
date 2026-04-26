@@ -1,5 +1,19 @@
 # Changelog
 
+## 2026-04-25 — Run 13: Frozen V-JEPA 2.1 ViT-Base-384 encoder for DoorKey planning
+
+### Why
+Runs 1–12 repeatedly failed because a tiny CNN trained from scratch (LeWM) cannot produce a latent space with meaningful geometry. Run 12 (DINOv2) and Run 13 (V-JEPA 2.1) are the first runs that cleanly test the planning architecture on top of rich pretrained features. V-JEPA 2.1 is more theoretically motivated than DINOv2: trained on ~2M hours of video with a JEPA objective (predict future latents from current ones), it's sensitive to motion and temporal dynamics — exactly what DoorKey planning requires.
+
+### What
+- New file: `abm/loop_mpc_doorkey_run13.py` — identical to Run 12 except encoder
+- Encoder: `torch.hub.load('facebookresearch/vjepa2', 'vjepa2_1_vit_base_384')` → returns `(encoder, predictor)`, use encoder only
+- Input: `(B, 3, 1, 384, 384)` — T=1 single frame; output: mean-pool 576 patch tokens → `(B, 768)`, L2-normalized
+- V-JEPA 2.1 supports single-frame natively via `img_temporal_dim_size=1` + `interpolate_rope=True`
+- All Run 12 architecture retained: FeatureReplayBuffer, GoalFeatureBuffer, FeaturePredictor (MLP 768→1024→768), EBMCostHead(768), protected seed_buf, post_door_neg_buf, 3-stage subgoals, curiosity OBSERVE, HER
+- Condition: `vjepa2_frozen` added to `abm_experiment.py` choices
+- Help text for `--loop-module` updated to include run12 and run13
+
 ## 2026-04-22 — Add loop_mpc_doorkey.py: Phase 1 DoorKey planner-only scout
 
 ### Why
