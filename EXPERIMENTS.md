@@ -246,7 +246,7 @@ H=5 solved the compound error problem for stage 0 — the key buffer grew steadi
 
 ---
 
-### Run 9 — scripted_seed
+### Run 9 — 2026-04-26 — scripted_seed
 
 **File:** `abm/loop_mpc_doorkey_run9.py`  
 **Loop module:** `abm.loop_mpc_doorkey_run9`  
@@ -263,12 +263,49 @@ H=5 solved the compound error problem for stage 0 — the key buffer grew steadi
 
 **Hypothesis:** The binding constraint across all prior runs is that the world model has never seen post-door transitions. Random seeding gives ~5 exit images from 200 episodes (~2.5% completion rate). BFS seeder completes 100% of episodes, giving 200+ images per subgoal buffer and WM training data from every region of the grid. H=8 bridges the stage-1 gap (door approach is 6-8 steps) without the compound error that defeated H=30.
 
+**Result:** 0.0% success throughout all 120k ACT steps  
+**Buffer counts at step 200k:** key=335 (growing ✅) | door=211 (growing slowly ✅) | goal=200 (FROZEN ❌ — never grew past seed)  
+**ssl_ewa final:** 0.0468  
+**Total wall time:** 6,922s (~1.9hr)  
+**Peak success:** 0.0%
+
+**Why it failed:**  
+The seeder populated the EBM goal image buffers (200 images each) but never pushed `(obs, action, next_obs)` transitions to `buf_lew` (the WM replay buffer). The world model was trained entirely on 80k OBSERVE steps of curiosity exploration — all left-half transitions, same OOD problem as Runs 1–8.
+
+The replay buffer (100k capacity) fills after 100k/16 ≈ 6,250 steps and is completely recycled every ~6k steps. Even if the seeder had pushed transitions to `buf_lew`, they would have been evicted long before ACT started. The WM had zero post-door training data.
+
+Evidence: CEM opened the door 10 times during ACT (door: 201→211) but goal never grew past 200. After the door opens, CEM plans through an OOD world model that hallucinates the right half of the grid.
+
+**Root cause confirmed (definitive):** Seeded transitions were never written to `buf_lew`. WM training data = random walk only, regardless of seeder success rate.
+
+---
+
+### Run 10 — protected_seed
+
+**File:** `abm/loop_mpc_doorkey_run10.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run10`  
+**Condition:** `protected_seed`
+
+| Parameter | Value |
+|-----------|-------|
+| Seeder | BFS scripted (200 episodes, same as Run 9) |
+| WM training | **50% seed_buf + 50% buf_lew every step** |
+| seed_buf | 20k capacity, **never overwritten** |
+| CEM horizon | 8 |
+| Goal structure | 3-stage subgoals |
+| OBSERVE policy | Curiosity |
+| EBM signal | Standard + HER |
+
+**Hypothesis:** The seeder now pushes `(obs, action, next_obs)` transitions to a separate `seed_buf` (capacity 20k, never overwritten by online data). Every WM training step mixes 50% seed_buf + 50% buf_lew. Post-door dynamics are permanently represented in WM training throughout all 200k steps. When CEM opens the door and enters stage 2, the world model now has accurate predictions for the right half of the grid.
+
+**Expected signal:** goal buffer should grow past 200 for the first time in any run.
+
 **RunPod command:**
 
 ```bash
 cd /workspace/ose && git pull && python abm_experiment.py \
-  --loop-module abm.loop_mpc_doorkey_run9 \
-  --condition scripted_seed \
+  --loop-module abm.loop_mpc_doorkey_run10 \
+  --condition protected_seed \
   --device cuda --env doorkey \
   --steps 200000 --n-envs 16 --observe-steps 80000
 ```
@@ -299,7 +336,8 @@ _Not started._
 | 2026-04-26 | DoorKey R6 | subgoals | DoorKey | 200k | 0% | 0% | key=596✅ door=106✅ goal=12❌ frozen — post-door OOD confirmed |
 | — | DoorKey R7 | curiosity_her | DoorKey | 200k | — | — | Curiosity + HER combined — pending |
 | 2026-04-26 | DoorKey R8 | short_horizon | DoorKey | 200k | 0% | 0% | H=5: key✅ door❌frozen — H too short for stage 1 (needs 6-8 steps) |
-| — | DoorKey R9 | scripted_seed | DoorKey | 200k | — | — | BFS seeder + H=8 — pending |
+| 2026-04-26 | DoorKey R9 | scripted_seed | DoorKey | 200k | 0% | 0% | door=211✅ goal=200❌frozen — seeder never wrote to buf_lew, WM still OOD |
+| — | DoorKey R10 | protected_seed | DoorKey | 200k | — | — | 50% seed_buf in every WM batch — post-door data permanent — pending |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
