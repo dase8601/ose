@@ -7,4 +7,5 @@ minigrid>=2.3
 pygame>=2.4.0
 imageio
 timm>=0.9
+einops>=0.7
 tqdm
