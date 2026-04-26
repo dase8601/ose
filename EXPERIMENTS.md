@@ -404,7 +404,9 @@ cd /workspace && git clone https://github.com/dase8601/ose.git && cd ose && pip 
 
 **Hypothesis:** V-JEPA 2.1 trained on video with a JEPA objective (predict future latents) — more theoretically aligned with our transition predictor than DINOv2's static-image training. Features should be sensitive to motion and state change, giving CEM a meaningful gradient to plan toward the exit.
 
-**Mid-run signal (step 96k, ~15k into ACT):** success=20.0%, goal=208 (8 new goals in 15k ACT steps), door=248, post_neg=5000 (capped), pred_ewa≈0.0000 — predictor loss near zero, V-JEPA features are smooth/predictable. Still running.
+**Result:** FAILED to exceed 20% consistently — peak=20.0%, final=0.0% | 9698s  
+Final buffer state: key=619 door=508 goal=243 post_neg=5000 her=542 | pred_ewa=0.0000 throughout  
+Matched Run 12 (DINOv2) exactly: same 20% peak, same 0% final, same pred_ewa≈0. V-JEPA's video pretraining did not produce more discriminative features than DINOv2 for this synthetic grid task (cross-seed cos_sim=0.9699 vs DINOv2's same). Adjacent DoorKey frames have cos_sim≈0.999 in V-JEPA space — predicting "z_{t+1}≈z_t" is near-optimal under cosine loss and CEM reduces to EBM-biased random search. The 20% sporadic successes come from the EBM correctly identifying goal features, not from the predictor learning real dynamics. Root cause: both frozen encoders are trained to ignore low-level pixel differences, but DoorKey state changes ARE low-level pixel changes in a 6×6 synthetic grid. Motivates Runs 14a (adapter) and 14b (symbolic augmentation) which address the pred_ewa≈0 failure mode directly.
 
 **RunPod command:**
 
@@ -446,7 +448,7 @@ _Not started._
 | 2026-04-26 | DoorKey R10 | protected_seed | DoorKey | 200k | 0% | 0% | door=213✅ 13 openings — WM fixed, EBM stage-2 energy wrong in right half |
 | 2026-04-26 | DoorKey R11 | post_door_neg | DoorKey | 200k | 0% | 0% | door=223✅ goal=200❌frozen — EBM ON, post_neg=4318, CNN encoder OOD confirmed |
 | 2026-04-26 | DoorKey R12 | dinov2_frozen | DoorKey | 200k | 20% | 0% | First non-zero — DINOv2 cos_sim=0.9699 warning, noisy success, goal=228 |
-| 2026-04-26 | DoorKey R13 | vjepa2_frozen | DoorKey | 200k | — | — | V-JEPA 2.1 — 20% at step 95k (15k into ACT), still running |
+| 2026-04-26 | DoorKey R13 | vjepa2_frozen | DoorKey | 200k | 20% | 0% | Same as R12 — pred_ewa≈0, CEM=random search, 20% from EBM luck |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
