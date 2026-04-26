@@ -134,7 +134,7 @@ Curiosity improved exploration diversity but the planning horizon (H=30) remaine
 
 ---
 
-### Run 5 — (next) her_goals
+### Run 5 — 2026-04-26 — her_goals
 
 **File:** `abm/loop_mpc_doorkey_her.py`  
 **Loop module:** `abm.loop_mpc_doorkey_her`  
@@ -148,9 +148,18 @@ Curiosity improved exploration diversity but the planning horizon (H=30) remaine
 
 **Hypothesis:** EBM had only ~23 positive training pairs in 200k steps. HER relabeling treats every episode-end state as "a goal achieved for itself" — E(z_end, z_end) should be low, E(z_random, z_end) should be high. This gives thousands of positive pairs per run instead of 23.
 
+**Result:** 0.0% success throughout all 120k ACT steps  
+**Goals collected:** 11 actual successes | HER buffer: 548 terminal states  
+**ssl_ewa final:** 0.0259  
+**Total wall time:** 16,795s (~4.7hr)  
+**Peak success:** 0.0%
+
+**Why it failed:**  
+HER grew the EBM training signal from 11 pairs to 548+ but the EBM still cannot guide CEM to the exit. The root cause is not signal density — it's that the world model was trained entirely on random-walk transitions and has never seen the right half of the grid (post-door region). CEM plans imagined trajectories through an OOD region; no cost function can fix a hallucinating world model.
+
 ---
 
-### Run 6 — (next) subgoals
+### Run 6 — 2026-04-26 — subgoals
 
 **File:** `abm/loop_mpc_doorkey_subgoals.py`  
 **Loop module:** `abm.loop_mpc_doorkey_subgoals`  
@@ -166,9 +175,20 @@ Curiosity improved exploration diversity but the planning horizon (H=30) remaine
 
 **Hypothesis:** DoorKey's full task is 30–80 steps. A single CEM invocation at H=30 can't bridge the full distance. Breaking it into three separately-tractable stages lets CEM solve each sub-problem with a realistic horizon. The EBM is trained on subgoal images, not just final exits.
 
+**Result:** 0.0% success throughout all 120k ACT steps  
+**Buffer counts at step 200k:** key=596 (growing ✅) | door=106 (growing ✅) | goal=12 (FROZEN ❌)  
+**ssl_ewa final:** 0.0269  
+**Total wall time:** 18,087s (~5.0hr)  
+**Peak success:** 0.0%
+
+**Why it failed:**  
+Stages 0 (key pickup) and 1 (door unlock) both work — key and door buffers grew throughout ACT phase, confirming CEM can navigate to the key and door with H=30. Stage 2 (exit navigation) never produced a single new success beyond the 12 random-seed images. The post-door region (right half of the grid) is completely OOD for the world model: during OBSERVE, a random walk almost never opens the door, so the WM has zero training data from that region. CEM imagines physically incoherent trajectories past the door and cannot reach the exit.
+
+**Root cause confirmed:** World model distribution gap — the post-door region is never visited during OBSERVE. This is the binding constraint, not horizon length or EBM signal quality.
+
 ---
 
-### Run 7 — (next) curiosity_her
+### Run 7 — curiosity_her
 
 **File:** `abm/loop_mpc_doorkey_curiosity_her.py`  
 **Loop module:** `abm.loop_mpc_doorkey_curiosity_her`  
@@ -182,29 +202,74 @@ Curiosity improved exploration diversity but the planning horizon (H=30) remaine
 
 **Hypothesis:** Both problems (OOD world model + sparse EBM positives) compound. If neither Run 4 nor Run 5 alone succeeds, Run 7 tests whether fixing both simultaneously is needed.
 
+_(Result pending)_
+
 ---
 
-**RunPod commands (run in order):**
+### Run 8 — 2026-04-26 — short_horizon
+
+**File:** `abm/loop_mpc_doorkey_run8.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run8`  
+**Condition:** `short_horizon`
+
+| Parameter | Value |
+|-----------|-------|
+| CEM horizon | **5** (was 30) |
+| Goal structure | 3-stage subgoals |
+| OBSERVE policy | Curiosity |
+| EBM signal | Standard + HER |
+| Pre-seeding | 200 random episodes |
+| Everything else | Identical to Run 6 |
+
+**Hypothesis:** Compound error at H=30: 0.65^30 ≈ 0.002% coherent trajectories. H=5 gives 0.65^5 ≈ 11.6%. Shorter horizon should let CEM find tractable plans even with an imperfect world model.
+
+**Result:** 0.0% success throughout all 120k ACT steps  
+**Buffer counts at step 200k:** key=262 (growing ✅) | door=52 (FROZEN ❌) | goal=5 (seed only)  
+**ssl_ewa final:** 0.0411  
+**Total wall time:** 5,317s (~1.5hr)  
+**Peak success:** 0.0%
+
+**Why it failed:**  
+H=5 solved the compound error problem for stage 0 — the key buffer grew steadily throughout ACT, confirming CEM can reach the key with a 5-step horizon. But door approach requires 6–8 steps minimum (navigate adjacent + face + toggle), so H=5 can never execute stage 1. The door buffer froze at 52 (the random-seed count) from step 80k onward. H=5 is too short for stage 1; H=30 is too long for a coherent plan. The right horizon is 7–9 — long enough to approach the door, short enough to avoid compound error.
+
+**Stage-by-stage diagnosis (cross-run summary):**
+
+| Stage | H=5, Run 8 | H=30 + subgoals, Run 6 |
+|-------|-----------|------------------------|
+| 0: key pickup | ✅ growing | ✅ growing |
+| 1: door unlock | ❌ frozen (H too short) | ✅ growing |
+| 2: exit navigation | — | ❌ frozen (WM OOD) |
+
+**What we changed for Run 9:**  
+- BFS scripted seeder: completes all 200 seed episodes successfully, giving WM training data from the entire grid including post-door region (200+ images per buffer vs 5 exit images from random seeding)  
+- CEM horizon: 5 → 8 (handles 6-8 step door approach; 0.65^8 ≈ 3.2% coherence)
+
+---
+
+### Run 9 — scripted_seed
+
+**File:** `abm/loop_mpc_doorkey_run9.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run9`  
+**Condition:** `scripted_seed`
+
+| Parameter | Value |
+|-----------|-------|
+| Seeder | **BFS scripted policy** — completes all 200 episodes |
+| CEM horizon | **8** |
+| Goal structure | 3-stage subgoals |
+| OBSERVE policy | Curiosity |
+| EBM signal | Standard + HER |
+| Everything else | Identical to Run 8 |
+
+**Hypothesis:** The binding constraint across all prior runs is that the world model has never seen post-door transitions. Random seeding gives ~5 exit images from 200 episodes (~2.5% completion rate). BFS seeder completes 100% of episodes, giving 200+ images per subgoal buffer and WM training data from every region of the grid. H=8 bridges the stage-1 gap (door approach is 6-8 steps) without the compound error that defeated H=30.
+
+**RunPod command:**
 
 ```bash
-# Run 4
-python abm_experiment.py --loop-module abm.loop_mpc_doorkey_curiosity \
-  --condition curiosity_observe --device cuda --env doorkey \
-  --steps 200000 --n-envs 16 --observe-steps 80000
-
-# Run 5
-python abm_experiment.py --loop-module abm.loop_mpc_doorkey_her \
-  --condition her_goals --device cuda --env doorkey \
-  --steps 200000 --n-envs 16 --observe-steps 80000
-
-# Run 6
-python abm_experiment.py --loop-module abm.loop_mpc_doorkey_subgoals \
-  --condition subgoals --device cuda --env doorkey \
-  --steps 200000 --n-envs 16 --observe-steps 80000
-
-# Run 7
-python abm_experiment.py --loop-module abm.loop_mpc_doorkey_curiosity_her \
-  --condition curiosity_her --device cuda --env doorkey \
+cd /workspace/ose && git pull && python abm_experiment.py \
+  --loop-module abm.loop_mpc_doorkey_run9 \
+  --condition scripted_seed \
+  --device cuda --env doorkey \
   --steps 200000 --n-envs 16 --observe-steps 80000
 ```
 
@@ -230,10 +295,11 @@ _Not started._
 | 2026-04-25 | DoorKey R2 | planner_only | DoorKey | 200k | 0% | 0% | H=30, train during ACT — cosine dist not sufficient |
 | 2026-04-25 | DoorKey R3 | planner_only | DoorKey | 200k | 0% | 0% | EBM ON by 192k, 19 goals, 4.5hr — WM OOD, too few positives |
 | 2026-04-26 | DoorKey R4 | curiosity_observe | DoorKey | 200k | 0% | 0% | Curiosity alone insufficient — WM horizon still the bottleneck |
-| — | DoorKey R5 | her_goals | DoorKey | 200k | — | — | HER EBM signal — pending |
-| — | DoorKey R6 | subgoals | DoorKey | 200k | — | — | 3-stage subgoals + seeding — pending |
+| 2026-04-26 | DoorKey R5 | her_goals | DoorKey | 200k | 0% | 0% | 11 goals, her=548, 4.7hr — HER can't fix OOD WM |
+| 2026-04-26 | DoorKey R6 | subgoals | DoorKey | 200k | 0% | 0% | key=596✅ door=106✅ goal=12❌ frozen — post-door OOD confirmed |
 | — | DoorKey R7 | curiosity_her | DoorKey | 200k | — | — | Curiosity + HER combined — pending |
-| — | DoorKey R8 | short_horizon | DoorKey | 200k | — | — | H=5 + subgoals + curiosity + HER — pending |
+| 2026-04-26 | DoorKey R8 | short_horizon | DoorKey | 200k | 0% | 0% | H=5: key✅ door❌frozen — H too short for stage 1 (needs 6-8 steps) |
+| — | DoorKey R9 | scripted_seed | DoorKey | 200k | — | — | BFS seeder + H=8 — pending |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
