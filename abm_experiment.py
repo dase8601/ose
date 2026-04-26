@@ -461,7 +461,7 @@ def main():
                         choices=["autonomous", "fixed", "ppo_only", "mpc_only", "random",
                                  "planner_only", "curiosity_observe", "her_goals",
                                  "subgoals", "curiosity_her", "short_horizon", "scripted_seed",
-                                 "protected_seed"],
+                                 "protected_seed", "post_door_neg"],
                         help="Single condition to run")
     parser.add_argument("--all",    action="store_true",
                         help="Run all conditions (Paper 3: autonomous+fixed+mpc_only+random for miniworld)")
