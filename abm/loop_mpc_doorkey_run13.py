@@ -87,14 +87,53 @@ CEM_ITERS              = 5
 
 # ── V-JEPA 2.1 encoder ────────────────────────────────────────────────────
 
+_VJEPA2_CKPT_URL = "https://dl.fbaipublicfiles.com/vjepa2/vjepa2_1_vitb_dist_vitG_384.pt"
+_VJEPA2_CKPT_NAME = "vjepa2_1_vitb_dist_vitG_384.pt"
+
+
 def _load_vjepa2(device: str) -> nn.Module:
+    """
+    Load V-JEPA 2.1 ViT-Base-384 encoder with weights from fbaipublicfiles.
+
+    torch.hub's cached backbones.py on some RunPod images has a broken
+    VJEPA_BASE_URL = "http://localhost:8300" instead of the real fbaipublicfiles
+    URL. We work around it by:
+      1. Loading architecture only (pretrained=False) — no weight download
+      2. Downloading the checkpoint ourselves to torch's cache dir
+      3. Loading the state dict directly, mirroring _make_vjepa2_1_model logic
+    """
+    import urllib.request
+
     logger.info("[RUN13] Loading V-JEPA 2.1 ViT-Base-384 (frozen)...")
+
+    # Step 1: architecture only — skip the broken hub URL
     encoder, _predictor = torch.hub.load(
         "facebookresearch/vjepa2",
         "vjepa2_1_vit_base_384",
-        pretrained=True,
+        pretrained=False,
         trust_repo=True,
     )
+
+    # Step 2: download checkpoint if not already cached
+    ckpt_dir = Path(torch.hub.get_dir()) / "checkpoints"
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_path = ckpt_dir / _VJEPA2_CKPT_NAME
+    if not ckpt_path.exists():
+        logger.info(f"[RUN13] Downloading checkpoint from {_VJEPA2_CKPT_URL} ...")
+        urllib.request.urlretrieve(_VJEPA2_CKPT_URL, str(ckpt_path))
+        logger.info(f"[RUN13] Checkpoint saved to {ckpt_path}")
+    else:
+        logger.info(f"[RUN13] Using cached checkpoint: {ckpt_path}")
+
+    # Step 3: load weights — mirrors _make_vjepa2_1_model (checkpoint_key="ema_encoder")
+    state_dict = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)
+    enc_sd = state_dict["ema_encoder"]
+    cleaned = {}
+    for k, v in enc_sd.items():
+        k = k.replace("module.", "").replace("backbone.", "")
+        cleaned[k] = v
+    encoder.load_state_dict(cleaned)
+
     encoder = encoder.to(device).eval()
     for p in encoder.parameters():
         p.requires_grad_(False)
