@@ -298,14 +298,46 @@ Evidence: CEM opened the door 10 times during ACT (door: 201→211) but goal nev
 
 **Hypothesis:** The seeder now pushes `(obs, action, next_obs)` transitions to a separate `seed_buf` (capacity 20k, never overwritten by online data). Every WM training step mixes 50% seed_buf + 50% buf_lew. Post-door dynamics are permanently represented in WM training throughout all 200k steps. When CEM opens the door and enters stage 2, the world model now has accurate predictions for the right half of the grid.
 
-**Expected signal:** goal buffer should grow past 200 for the first time in any run.
+**Result:** 0.0% success throughout all 120k ACT steps  
+**Buffer counts at step 200k:** key=305 (growing ✅) | door=213 (growing ✅ — 13 openings) | goal=200 (FROZEN ❌)  
+**ssl_ewa final:** 0.0641  
+**Total wall time:** 7,283s (~2.0hr)  
+**Peak success:** 0.0%
+
+**Why it failed:**  
+The WM fix worked — door opened 13 times during ACT (best rate of any run), confirming CEM now plans correctly through stages 0 and 1. But goal never grew past 200. Each of the 13 door-opening windows lasted ~10–30 steps in the right half before episode timeout, yet CEM never reached the exit once.
+
+Root cause: stage-2 EBM energy landscape is wrong inside the right half. EBM negatives throughout training are ~99% left-half states (from buf_lew). Right-half non-exit states have never appeared as negatives, so the EBM either assigns them flat energy (CEM gets no gradient) or assigns them lower energy than left-half states (CEM plans back through the door). Either way, the 13 brief stage-2 windows produced zero successes.
+
+---
+
+### Run 11 — 2026-04-26 — post_door_neg
+
+**File:** `abm/loop_mpc_doorkey_run11.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run11`  
+**Condition:** `post_door_neg`
+
+| Parameter | Value |
+|-----------|-------|
+| Seeder | BFS scripted (200 episodes, same as Run 10) |
+| WM training | 50% seed_buf + 50% buf_lew (from Run 10) |
+| seed_buf | 20k capacity, never overwritten (from Run 10) |
+| **post_door_neg_buf** | **5k capacity — right-half non-exit frames** |
+| EBM signal | Standard + HER + **stage-2 specific (goal vs post_door_neg)** |
+| CEM horizon | 8 |
+| Goal structure | 3-stage subgoals |
+| OBSERVE policy | Curiosity |
+
+**Hypothesis:** The seeder collects every frame between door-open and exit (~4–8 frames × 200 episodes ≈ 800–1000 right-half non-exit images) into `post_door_neg_buf`. A 4th EBM training signal trains `goal_buf` positives vs `post_door_neg_buf` negatives — teaching `E(z_exit, z_goal) < E(z_right_non_exit, z_goal)`. During ACT, every door-open non-success frame is also pushed to `post_door_neg_buf` for online refinement. This should give CEM a meaningful energy gradient inside the right half for the first time.
+
+**Expected signal:** `post_door_neg=~800` in seeder log; goal grows past 200 during ACT.
 
 **RunPod command:**
 
 ```bash
 cd /workspace/ose && git pull && python abm_experiment.py \
-  --loop-module abm.loop_mpc_doorkey_run10 \
-  --condition protected_seed \
+  --loop-module abm.loop_mpc_doorkey_run11 \
+  --condition post_door_neg \
   --device cuda --env doorkey \
   --steps 200000 --n-envs 16 --observe-steps 80000
 ```
@@ -337,6 +369,8 @@ _Not started._
 | — | DoorKey R7 | curiosity_her | DoorKey | 200k | — | — | Curiosity + HER combined — pending |
 | 2026-04-26 | DoorKey R8 | short_horizon | DoorKey | 200k | 0% | 0% | H=5: key✅ door❌frozen — H too short for stage 1 (needs 6-8 steps) |
 | 2026-04-26 | DoorKey R9 | scripted_seed | DoorKey | 200k | 0% | 0% | door=211✅ goal=200❌frozen — seeder never wrote to buf_lew, WM still OOD |
+| 2026-04-26 | DoorKey R10 | protected_seed | DoorKey | 200k | 0% | 0% | door=213✅ 13 openings — WM fixed, EBM stage-2 energy wrong in right half |
+| — | DoorKey R11 | post_door_neg | DoorKey | 200k | — | — | right-half non-exit negatives for stage-2 EBM — pending |
 | — | DoorKey R10 | protected_seed | DoorKey | 200k | — | — | 50% seed_buf in every WM batch — post-door data permanent — pending |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
