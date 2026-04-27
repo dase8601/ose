@@ -529,6 +529,41 @@ SYM_SCALE=10 gave pred_ewa a good start (0.010 before EBM fired). EBM activated 
 
 ---
 
+### Run 15a — 2026-04-27 — vjepa2_adapter_late_ebm
+
+**File:** `abm/loop_mpc_doorkey_run15a.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run15a`  
+**Condition:** `vjepa2_adapter_late_ebm`
+
+| Parameter | Value |
+|-----------|-------|
+| Encoder | Frozen V-JEPA 2.1 + trainable adapter 768→256→128 |
+| EBM gate | **`if not in_observe:`** — EBM activated at step 83200 |
+| pred_ewa at OBSERVE end | 0.0131 (spiky — 0.0001→spike 0.0259→collapse→0.0131) |
+
+**Result:** peak=30.0%, final=10.0% | 5130s  
+Final buffer state: key=608 door=474 goal=328 post_neg=5000 her=581  
+pred_ewa during ACT: oscillating 0.012–0.030 (spiky, not converging)  
+Goal grew 200 → 328 over 120k ACT steps  
+Success pattern: 30%, 0%, 0%, 10%, 10%, 0%, 10%, 10%, 10%, 10%
+
+**Why it matched 14a (same 30% peak):**  
+Delayed EBM activated correctly at step 83200, but the adapter was already exhibiting instability before EBM fired — pred_ewa spiking to 0.0259 at step 50k then collapsing to 0.0004, then 0.0321 at step 75k then collapse again. The instability is in the adapter architecture itself, not EBM timing. By the time EBM activated, the adapter had not converged — it was cycling through momentary solutions. EBM activating on an unstable adapter produces the same misalignment as EBM activating on an early random adapter.
+
+**Conclusion:** EBM timing was not the binding constraint for the adapter track. The adapter 768→128 bottleneck is itself unstable under cosine loss with near-identical V-JEPA frames. Delayed EBM is a necessary but insufficient fix for this architecture.
+
+**RunPod command:**
+
+```bash
+cd /workspace/ose && git pull && pip install einops && python abm_experiment.py \
+  --loop-module abm.loop_mpc_doorkey_run15a \
+  --condition vjepa2_adapter_late_ebm \
+  --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 80000
+```
+
+---
+
 ### Run 15c — 2026-04-27 — symbolic_only (running)
 
 **File:** `abm/loop_mpc_doorkey_run15c.py`  
@@ -619,6 +654,7 @@ _Not started._
 | 2026-04-26 | DoorKey R13 | vjepa2_frozen | DoorKey | 200k | 20% | 0% | Same as R12 — pred_ewa≈0, CEM=random search, 20% from EBM luck |
 | 2026-04-26 | DoorKey R14a | vjepa2_adapter | DoorKey | 200k | 30% | 20% | Adapter pred_ewa~0.02, goal=384, EBM misaligned (early start — fixed in R15a) |
 | 2026-04-26 | DoorKey R14b | vjepa2_symbolic | DoorKey | 200k | 50% | 0% | Sym dims drowned (0.5% cosine signal) — 50% peak from EBM, not predictor |
+| 2026-04-27 | DoorKey R15a | vjepa2_adapter_late_ebm | DoorKey | 200k | 30% | 10% | Same as R14a — adapter unstable regardless of EBM timing, pred_ewa spiky |
 | 2026-04-27 | DoorKey R15b | vjepa2_symbolic_scaled | DoorKey | 48k† | —  | — | KILLED — scaling worked (pred_ewa 0.010) but early EBM decayed it to 0.002 |
 | 2026-04-27 | DoorKey R15c | symbolic_only | DoorKey | 200k | — | — | goal growing 200→219 in 24k ACT steps — architecture confirmed working |
 | 2026-04-27 | DoorKey R16 | vjepa2_symbolic_scaled_late_ebm | DoorKey | 200k | — | — | 15b scaling + 15a delayed EBM — pending |
