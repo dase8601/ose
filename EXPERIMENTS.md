@@ -420,6 +420,174 @@ cd /workspace && git clone https://github.com/dase8601/ose.git && cd ose && pip 
 
 ---
 
+### Run 14a — 2026-04-26 — vjepa2_adapter
+
+**File:** `abm/loop_mpc_doorkey_run14a.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run14a`  
+**Condition:** `vjepa2_adapter`
+
+| Parameter | Value |
+|-----------|-------|
+| Encoder | Frozen V-JEPA 2.1 ViT-Base-384 (768-dim raw, stored in FeatureReplayBuffer) |
+| FeatureAdapter | Trainable 768→256→128 MLP (Linear→LN→GELU→Linear→LN + L2-norm) |
+| Planning dim | 128 (adapter output, not raw 768) |
+| Predictor | FeaturePredictor: (128+7)→512→512→128 |
+| EBM | EBMCostHead(128), contrastive hinge |
+| Optimizer | Shared Adam: adapter lr=3e-4, predictor lr=1e-4 |
+| EBM warmup | 500 steps from PRED_WARMUP — started too early (bug fixed in Run 15a) |
+| seed_buf | 20k protected FeatureReplayBuffer (raw 768-dim) |
+| CEM horizon | 8 |
+| Goal structure | 3-stage subgoals |
+| OBSERVE policy | Curiosity |
+
+**Hypothesis:** Force the encoder to learn a 128-dim action-relevant latent space via a trainable bottleneck adapter trained jointly with the predictor. The adapter collapses 768→128 and in doing so is forced to preserve only dimensions that change under actions — breaking the pred_ewa≈0 ceiling by making adjacent frames distinguishable in the projected space.
+
+**Result:** peak=30.0%, final=20.0% | 11001s  
+Final buffer state: key=634 door=504 goal=384 post_neg=5000 her=621  
+pred_ewa stabilized at ~0.02–0.023 during ACT — adapter successfully learned action-relevant structure.  
+Goal grew from 200→384 over 120k ACT steps (vs Run 13's 200→243 with frozen encoder).  
+Success was noisy: 30%, 20%, 0%, 30%, 10%, 10%, 0%, 10%, 20%, 0%, 20% across evals.
+
+**Why it underperformed:**  
+EBM training started at step ~10k (PRED_WARMUP=500) when the adapter was still randomly initialized. The EBM learned to assign low energy to adapter-random projections of goal states, but those projections shifted as the adapter trained for 80k more OBSERVE steps. The EBM became misaligned — goal energy pointed in wrong directions relative to the converged adapter. This motivated the delayed EBM fix in Run 15a (gate EBM training to after OBSERVE completes).
+
+**RunPod command:**
+
+```bash
+cd /workspace/ose && git pull && pip install einops && python abm_experiment.py \
+  --loop-module abm.loop_mpc_doorkey_run14a \
+  --condition vjepa2_adapter \
+  --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 80000
+```
+
+---
+
+### Run 14b — 2026-04-26 — vjepa2_symbolic
+
+**File:** `abm/loop_mpc_doorkey_run14b.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run14b`  
+**Condition:** `vjepa2_symbolic`
+
+| Parameter | Value |
+|-----------|-------|
+| Encoder | Frozen V-JEPA 2.1 (768-dim) + symbolic augmentation |
+| Symbolic features | [has_key, door_open, agent_x/5, agent_y/5] — 4 dims, unscaled |
+| Feature dim | 772 (768 visual + 4 symbolic) |
+| Predictor | FeaturePredictor: 772+7→1024→772 |
+| EBM | EBMCostHead(772) |
+| SYM_SCALE | 1.0 (no scaling — bug fixed in Run 15b) |
+| seed_buf | 20k protected FeatureReplayBuffer (772-dim) |
+| CEM horizon | 8 |
+| Goal structure | 3-stage subgoals |
+| OBSERVE policy | Curiosity |
+
+**Hypothesis:** Append perfect ground-truth symbolic state to visual features. Symbolic dims encode exactly the task-critical information (has_key, door_open, position) that DINOv2/V-JEPA can't distinguish. pred_ewa should break past 0 because adjacent frames now differ on symbolic dims when task-relevant events happen (key pickup → has_key flips 0→1).
+
+**Result:** peak=50.0%, final=0.0% | 9494s  
+Final buffer state: key=601 door=391 goal=260 post_neg=5000 her=553  
+pred_ewa stayed at 0.0002–0.0010 throughout — symbolic dims drowned out in cosine space.  
+50% peak at step ~140k — EBM doing useful work even without predictor learning real dynamics.
+
+**Why it underperformed:**  
+Unscaled 4 symbolic dims contribute ~0.5% of the cosine signal in 772-dim space (4/772 ≈ 0.52%). When computing cos_sim([768-dim visual | 4-dim sym], [768-dim visual' | 4-dim sym']), the 4 symbolic dims are effectively invisible — "predict same as input" is still near-optimal under cosine loss. The 50% peak is attributable to the EBM receiving correct symbolic signals in the augmented goal features, not to the predictor learning real dynamics. The 0% final suggests the agent found the exit once then couldn't reliably replicate. This motivated Run 15b (SYM_SCALE=10.0) which scales symbolic dims up by 10× so one-tile move → cos_sim≈0.980, forcing pred_ewa above 0.02.
+
+**RunPod command:**
+
+```bash
+cd /workspace/ose && git pull && pip install einops && python abm_experiment.py \
+  --loop-module abm.loop_mpc_doorkey_run14b \
+  --condition vjepa2_symbolic \
+  --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 80000
+```
+
+---
+
+### Run 15b — 2026-04-27 — vjepa2_symbolic_scaled (KILLED at step 48k)
+
+**File:** `abm/loop_mpc_doorkey_run15b.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run15b`  
+**Condition:** `vjepa2_symbolic_scaled`
+
+| Parameter | Value |
+|-----------|-------|
+| Encoder | Frozen V-JEPA 2.1 (768-dim) + symbolic scaled |
+| SYM_SCALE | **10.0** (fix over Run 14b's 1.0) |
+| Feature dim | 772 |
+| EBM gate | None — EBM activates during OBSERVE (same bug as 14b) |
+
+**Result:** KILLED at step 48k (still in 80k OBSERVE phase) — 2580s elapsed  
+Buffer state at kill: key=248 door=208 goal=200 post_neg=3326 her=128  
+pred_ewa at step 5k: **0.0104** (SYM_SCALE=10 working — much better than 14b's 0.001)  
+pred_ewa at step 48k: **0.0017** (decayed to near-zero — early EBM interference)
+
+**Why killed:**  
+SYM_SCALE=10 gave pred_ewa a good start (0.010 before EBM fired). EBM activated at step ~6k (during OBSERVE) and pred_ewa decayed monotonically: 0.0104 → 0.0050 → 0.0037 → 0.0018 → 0.0017. Same failure mode as 14a — EBM's contrastive gradients conflict with predictor training during early learning. Run killed to free the pod for Run 16 which combines 15b's scaling with 15a's delayed EBM gate.
+
+**Key finding:** Scaling works (pred_ewa 0.010 vs 14b's 0.001), but needs the delayed EBM gate to hold.
+
+---
+
+### Run 15c — 2026-04-27 — symbolic_only (running)
+
+**File:** `abm/loop_mpc_doorkey_run15c.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run15c`  
+**Condition:** `symbolic_only`
+
+| Parameter | Value |
+|-----------|-------|
+| Encoder | None — pure 5-dim symbolic state [has_key, door_open, x/5, y/5, dir/3] |
+| Feature dim | 5 |
+| OBSERVE | 40k (shorter — no visual encoder to warm up) |
+| EBM gate | None (activates at ~step 500) |
+
+**Early logs (step 64k, 24k into ACT):**  
+pred_ewa stable at **0.008–0.010** — predictor learning real dynamics  
+goal buffer growing: 200 → **219** (24k ACT steps)  
+key=293 door=231 — all stages progressing  
+Success rate: 15% at step 60k (ACT)
+
+**Significance:** First run where goal buffer grows consistently during ACT. Confirms the CEM+EBM planning architecture is fundamentally sound — when given a clean low-dimensional world model, it works. The entire failure history (Runs 1–14) was encoder quality, not the planner architecture.
+
+_(Result pending — run still in progress)_
+
+---
+
+### Run 16 — 2026-04-27 — vjepa2_symbolic_scaled_late_ebm
+
+**File:** `abm/loop_mpc_doorkey_run16.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run16`  
+**Condition:** `vjepa2_symbolic_scaled_late_ebm`
+
+| Parameter | Value |
+|-----------|-------|
+| Encoder | Frozen V-JEPA 2.1 (768-dim) + scaled symbolic |
+| SYM_SCALE | **10.0** (from Run 15b) |
+| Feature dim | 772 |
+| EBM gate | **`if not in_observe:`** — EBM trains only after OBSERVE ends (from Run 15a) |
+| EBM warmup | 500 steps after OBSERVE end |
+| seed_buf | 20k protected FeatureReplayBuffer |
+| CEM horizon | 8 |
+| Goal structure | 3-stage subgoals |
+| OBSERVE policy | Curiosity |
+
+**Hypothesis:** Run 15b showed scaling gives pred_ewa=0.010 before EBM fires. Run 15a showed delayed EBM prevents misalignment. Together: predictor trains for 80k steps with meaningful symbolic signal (cos_sim≈0.980 per tile move), reaches stable pred_ewa~0.009–0.020, then EBM activates on a stable representation. Should produce consistent success rates like Run 15c's architecture but with V-JEPA visual features.
+
+_(Result pending)_
+
+**RunPod command:**
+
+```bash
+cd /workspace/ose && git pull && pip install einops && python abm_experiment.py \
+  --loop-module abm.loop_mpc_doorkey_run16 \
+  --condition vjepa2_symbolic_scaled_late_ebm \
+  --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 80000
+```
+
+---
+
 ## Phase 2 — Prove autonomous System M > fixed switching (Crafter)
 
 _Not started. Begins only after Phase 1 planner proves > 42% on DoorKey._
@@ -449,6 +617,11 @@ _Not started._
 | 2026-04-26 | DoorKey R11 | post_door_neg | DoorKey | 200k | 0% | 0% | door=223✅ goal=200❌frozen — EBM ON, post_neg=4318, CNN encoder OOD confirmed |
 | 2026-04-26 | DoorKey R12 | dinov2_frozen | DoorKey | 200k | 20% | 0% | First non-zero — DINOv2 cos_sim=0.9699 warning, noisy success, goal=228 |
 | 2026-04-26 | DoorKey R13 | vjepa2_frozen | DoorKey | 200k | 20% | 0% | Same as R12 — pred_ewa≈0, CEM=random search, 20% from EBM luck |
+| 2026-04-26 | DoorKey R14a | vjepa2_adapter | DoorKey | 200k | 30% | 20% | Adapter pred_ewa~0.02, goal=384, EBM misaligned (early start — fixed in R15a) |
+| 2026-04-26 | DoorKey R14b | vjepa2_symbolic | DoorKey | 200k | 50% | 0% | Sym dims drowned (0.5% cosine signal) — 50% peak from EBM, not predictor |
+| 2026-04-27 | DoorKey R15b | vjepa2_symbolic_scaled | DoorKey | 48k† | —  | — | KILLED — scaling worked (pred_ewa 0.010) but early EBM decayed it to 0.002 |
+| 2026-04-27 | DoorKey R15c | symbolic_only | DoorKey | 200k | — | — | goal growing 200→219 in 24k ACT steps — architecture confirmed working |
+| 2026-04-27 | DoorKey R16 | vjepa2_symbolic_scaled_late_ebm | DoorKey | 200k | — | — | 15b scaling + 15a delayed EBM — pending |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |

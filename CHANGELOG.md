@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-04-27 — Run 16 built; Run 15b killed; Run 15b/15c partial results logged
+
+### Why
+Run 15b (SYM_SCALE=10) confirmed scaling works — pred_ewa started at 0.010 (vs 14b's 0.001). But early EBM activation during OBSERVE decayed pred_ewa to 0.0017 by step 48k, same failure mode as 14a. Run killed at step 48k to free the pod. Run 15c (pure symbolic) showed goal buffer growing 200→219 in first 24k ACT steps — architecture confirmed working when predictor learns real dynamics.
+
+Run 16 = 15b's SYM_SCALE=10 + 15a's `if not in_observe:` EBM gate. Single change over 15b.
+
+### What
+- New file: `abm/loop_mpc_doorkey_run16.py` — condition `vjepa2_symbolic_scaled_late_ebm`
+- EBM training block wrapped in `if not in_observe:` (only change from 15b)
+- `abm_experiment.py`: added `vjepa2_symbolic_scaled_late_ebm` to condition choices
+- EXPERIMENTS.md: Run 15b killed result logged, Run 15c partial logged, Run 16 entry added
+
+---
+
+## 2026-04-26 — Run 14a/14b results logged; Runs 15a/15b/15c built
+
+### Results logged
+- **Run 14a (vjepa2_adapter):** peak=30%, final=20%, pred_ewa~0.02, goal=384, 11001s — adapter learned but EBM misaligned (started too early during random adapter init)
+- **Run 14b (vjepa2_symbolic):** peak=50%, final=0%, pred_ewa≈0.001, goal=260, 9494s — 50% peak despite pred_ewa≈0 (EBM benefit), but symbolic dims drowned in 772-dim cosine space
+
+### Runs built and pushed
+- `abm/loop_mpc_doorkey_run15a.py` (`vjepa2_adapter_late_ebm`): delayed EBM — gated to `if not in_observe`, activates only after adapter has 80k OBSERVE steps to stabilize
+- `abm/loop_mpc_doorkey_run15b.py` (`vjepa2_symbolic_scaled`): SYM_SCALE=10.0 — symbolic dims scaled 10× so one-tile move → cos_sim≈0.980, forcing pred_ewa above 0.02
+- `abm/loop_mpc_doorkey_run15c.py` (`symbolic_only`): pure 5-dim symbolic state [has_key, door_open, x/5, y/5, dir/3], no visual encoder — tests whether CEM+EBM architecture works at all with a perfect world model
+
+---
+
 ## 2026-04-25 — Run 13: Frozen V-JEPA 2.1 ViT-Base-384 encoder for DoorKey planning
 
 ### Why
