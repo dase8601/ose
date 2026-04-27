@@ -655,7 +655,16 @@ cd /workspace/ose && git pull && pip install einops && python abm_experiment.py 
 
 **Hypothesis:** Run 15c confirmed the architecture works and pred_ewa is healthy. The binding failure is EBM saturation — once post_door_neg_buf fills to 5000, hinge loss margins are satisfied, gradients → 0, and CEM gets uniform energy for stage 3. Replacing stage-3 cost with L2 distance directly in position space is non-saturating and provably correct given a predictor that learns real dynamics (which 15c confirmed via pred_ewa~0.010). Stages 0/1 keep EBM since they work there.
 
-_(Result pending)_
+**Result:** peak=10.0%, final=0.0% | 8973s  
+Final buffer state: key=483 door=289 goal=203 post_neg=5000  
+pred_ewa: 0.007–0.008 throughout ACT (healthy, declining slightly from 0.008→0.006 mid-run, recovering to 0.008 at end)  
+goal grew 200 → 203 over 160k ACT steps — 3 successes from 64 door-opening windows = **4.7% conversion rate**  
+Compare: Run 15c EBM conversion = **83%** in first 24k ACT
+
+**Why it failed:**  
+H=8 compound prediction errors defeat L2 position regression. The predictor at pred_ewa=0.007 makes modest per-step errors; over 8 rollout steps those compound into position predictions that are wrong by 1–2 tiles. CEM finds action sequences that minimize L2 in imagined space but hit walls or go the wrong direction in reality. EBM's holistic pattern-matching ("does the end state look like a goal?") is robust to per-step errors because it only cares about the final state's global resemblance to goal features. L2 requires precise multi-step position accuracy that the architecture doesn't provide.
+
+**Key finding:** The 10% peak was a single lucky eval window. L2 cost gives ~4.7% stage-3 conversion vs EBM's 83%. EBM was the right approach all along — the only problem is saturation. Motivates Run 18: keep EBM pattern-matching but replace hinge loss with softplus (non-saturating gradient).
 
 **RunPod command:**
 
@@ -735,7 +744,7 @@ _Not started._
 | 2026-04-27 | DoorKey R15b | vjepa2_symbolic_scaled | DoorKey | 48k† | —  | — | KILLED — scaling worked (pred_ewa 0.010) but early EBM decayed it to 0.002 |
 | 2026-04-27 | DoorKey R15c | symbolic_only | DoorKey | 200k | 15% | 0% | goal 200→224, EBM saturated at stage 3 (margin→0), pred_ewa stable ~0.010 |
 | 2026-04-27 | DoorKey R16 | vjepa2_symbolic_scaled_late_ebm | DoorKey | 200k | 10% | 0% | pred_ewa=0.001 flat, goal=207, SYM_SCALE=10 insufficient — visual encoder track exhausted |
-| 2026-04-27 | DoorKey R17 | symbolic_l2_stage3 | DoorKey | 200k | — | — | L2 cost replaces EBM at stage 3 — goal=201 after 60k ACT (failing) |
+| 2026-04-27 | DoorKey R17 | symbolic_l2_stage3 | DoorKey | 200k | 10% | 0% | goal=203, 4.7% conversion — H=8 compound error kills L2 position regression |
 | 2026-04-27 | DoorKey R18 | symbolic_bce_ebm | DoorKey | 200k | — | — | Softplus loss replaces hinge — non-saturating EBM for all stages |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
