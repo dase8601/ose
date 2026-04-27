@@ -564,7 +564,7 @@ cd /workspace/ose && git pull && pip install einops && python abm_experiment.py 
 
 ---
 
-### Run 15c — 2026-04-27 — symbolic_only (running)
+### Run 15c — 2026-04-27 — symbolic_only
 
 **File:** `abm/loop_mpc_doorkey_run15c.py`  
 **Loop module:** `abm.loop_mpc_doorkey_run15c`  
@@ -577,15 +577,20 @@ cd /workspace/ose && git pull && pip install einops && python abm_experiment.py 
 | OBSERVE | 40k (shorter — no visual encoder to warm up) |
 | EBM gate | None (activates at ~step 500) |
 
-**Early logs (step 64k, 24k into ACT):**  
-pred_ewa stable at **0.008–0.010** — predictor learning real dynamics  
-goal buffer growing: 200 → **219** (24k ACT steps)  
-key=293 door=231 — all stages progressing  
-Success rate: 15% at step 60k (ACT)
+**Result:** peak=15.0%, final=0.0% | 8748s  
+Final buffer state: key=~300+ door=~240+ goal=224 post_neg=5000 her=~600  
+pred_ewa: stable 0.009–0.011 throughout ACT (predictor genuinely learning dynamics)  
+goal grew 200 → 224 over 160k ACT steps — initial burst to 219 in first 24k ACT, then froze ~85k–200k  
+act_steps: 160,000 (40k observe + 160k ACT)
 
-**Significance:** First run where goal buffer grows consistently during ACT. Confirms the CEM+EBM planning architecture is fundamentally sound — when given a clean low-dimensional world model, it works. The entire failure history (Runs 1–14) was encoder quality, not the planner architecture.
+**Early promise (step 64k, 24k into ACT):**  
+pred_ewa stable at 0.008–0.010, goal=219, key=293, door=231, success=15% — all stages progressing.  
+Architecture confirmed sound for stages 0/1.
 
-_(Result pending — run still in progress)_
+**Why it stalled at stage 3:**  
+EBM saturation. The contrastive hinge loss `max(0, margin - E_neg + E_pos)` reaches zero gradients once post_door_neg_buf fills to 5000 and all margins are satisfied. After ~85k into ACT, EBM gradients → 0 and CEM receives uniform energy across all right-half states. Agent stumbles to exit by random chance only — 4 additional goal successes in 136k remaining steps (224−220=4 goals, ~0.003% hit rate). This is not a predictor failure; pred_ewa was healthy throughout. The binding constraint is the EBM cost function itself.
+
+**Key finding:** CEM+EBM architecture works when given a clean world model (pred_ewa≈0.010 stable). The failure mode is EBM saturation at stage 3, not predictor learning. Motivates Run 17: replace contrastive EBM for stage 3 with direct L2 distance on position dims [x/5, y/5] — non-saturating, provably correct with a good predictor.
 
 ---
 
@@ -623,6 +628,38 @@ cd /workspace/ose && git pull && pip install einops && python abm_experiment.py 
 
 ---
 
+### Run 17 — 2026-04-27 — symbolic_l2_stage3
+
+**File:** `abm/loop_mpc_doorkey_run17.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run17`  
+**Condition:** `symbolic_l2_stage3`
+
+| Parameter | Value |
+|-----------|-------|
+| Encoder | None — pure 5-dim symbolic state (same as Run 15c) |
+| Feature dim | 5 |
+| OBSERVE | 40k |
+| Stage 0/1 planning | EBM-guided CEM (`mpc.plan_batch`) — same as 15c |
+| **Stage 2 planning** | **L2 cost CEM** — `cost = (z_H[2] − goal_x)² + (z_H[3] − goal_y)²` |
+| L2 dims | dims 2/3 = agent_x/5, agent_y/5 in the 5-dim symbolic state |
+| CEM horizon | 8, 512 samples, 64 elites, 5 iters |
+
+**Hypothesis:** Run 15c confirmed the architecture works and pred_ewa is healthy. The binding failure is EBM saturation — once post_door_neg_buf fills to 5000, hinge loss margins are satisfied, gradients → 0, and CEM gets uniform energy for stage 3. Replacing stage-3 cost with L2 distance directly in position space is non-saturating and provably correct given a predictor that learns real dynamics (which 15c confirmed via pred_ewa~0.010). Stages 0/1 keep EBM since they work there.
+
+_(Result pending)_
+
+**RunPod command:**
+
+```bash
+cd /workspace/ose && git pull && python abm_experiment.py \
+  --loop-module abm.loop_mpc_doorkey_run17 \
+  --condition symbolic_l2_stage3 \
+  --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 40000
+```
+
+---
+
 ## Phase 2 — Prove autonomous System M > fixed switching (Crafter)
 
 _Not started. Begins only after Phase 1 planner proves > 42% on DoorKey._
@@ -656,8 +693,9 @@ _Not started._
 | 2026-04-26 | DoorKey R14b | vjepa2_symbolic | DoorKey | 200k | 50% | 0% | Sym dims drowned (0.5% cosine signal) — 50% peak from EBM, not predictor |
 | 2026-04-27 | DoorKey R15a | vjepa2_adapter_late_ebm | DoorKey | 200k | 30% | 10% | Same as R14a — adapter unstable regardless of EBM timing, pred_ewa spiky |
 | 2026-04-27 | DoorKey R15b | vjepa2_symbolic_scaled | DoorKey | 48k† | —  | — | KILLED — scaling worked (pred_ewa 0.010) but early EBM decayed it to 0.002 |
-| 2026-04-27 | DoorKey R15c | symbolic_only | DoorKey | 200k | — | — | goal growing 200→219 in 24k ACT steps — architecture confirmed working |
+| 2026-04-27 | DoorKey R15c | symbolic_only | DoorKey | 200k | 15% | 0% | goal 200→224, EBM saturated at stage 3 (margin→0), pred_ewa stable ~0.010 |
 | 2026-04-27 | DoorKey R16 | vjepa2_symbolic_scaled_late_ebm | DoorKey | 200k | — | — | 15b scaling + 15a delayed EBM — pending |
+| 2026-04-27 | DoorKey R17 | symbolic_l2_stage3 | DoorKey | 200k | — | — | L2 cost replaces EBM at stage 3 — tests saturation hypothesis |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |

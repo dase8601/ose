@@ -1,5 +1,22 @@
 # Changelog
 
+## 2026-04-27 — Run 17 built; Run 15c final results logged
+
+### Why
+Run 15c (symbolic_only) confirmed the CEM+EBM architecture works when given a clean world model — pred_ewa stable at 0.009–0.011 throughout, goal grew 200→224. But goal froze after ~85k of ACT due to EBM saturation: once post_door_neg_buf fills to 5000 and hinge margins are satisfied, gradients → 0 and CEM gets uniform stage-3 energy. Run 17 replaces the saturating EBM cost for stage 3 with a direct L2 distance on position dims [x/5, y/5] — non-saturating, provably correct given the predictor learns real dynamics.
+
+### What
+- New file: `abm/loop_mpc_doorkey_run17.py` — condition `symbolic_l2_stage3`
+- `_cem_stage3_l2_batch()`: batched CEM with `cost = (z_H[2]−goal_x)² + (z_H[3]−goal_y)²`, 512 samples, 64 elites, 5 iters, horizon=8
+- `_cem_stage3_l2_single()`: single-env eval variant
+- Stages 0/1: unchanged EBM-guided `mpc.plan_batch`/`mpc.plan_single`
+- Stage 2 ACT: uses `_cem_stage3_l2_batch` with `goal_xy = active_goal_z[i][2:4]`
+- Stage 2 eval: uses `_cem_stage3_l2_single` with `goal_xy = z_goal[0, 2:4]`
+- `abm_experiment.py`: added `symbolic_l2_stage3` to condition choices
+- EXPERIMENTS.md: Run 15c final results logged (peak=15%, EBM saturation confirmed), Run 17 entry added
+
+---
+
 ## 2026-04-27 — Run 16 built; Run 15b killed; Run 15b/15c partial results logged
 
 ### Why
