@@ -202,7 +202,8 @@ Stages 0 (key pickup) and 1 (door unlock) both work — key and door buffers gre
 
 **Hypothesis:** Both problems (OOD world model + sparse EBM positives) compound. If neither Run 4 nor Run 5 alone succeeds, Run 7 tests whether fixing both simultaneously is needed.
 
-_(Result pending)_
+**Result:** NOT RUN — superseded before execution.  
+Run 8 was started instead, which combined curiosity+HER with a shorter horizon (H=5) and 3-stage subgoals — a more targeted intervention than Run 7's combination. By the time Run 6 finished and confirmed the post-door OOD problem, it was clear that the real bottleneck was world model coverage of the right half of the grid, not the combination of curiosity+HER. Run 8 directly addressed horizon length as the next hypothesis.
 
 ---
 
@@ -731,7 +732,7 @@ _Not started._
 | 2026-04-26 | DoorKey R4 | curiosity_observe | DoorKey | 200k | 0% | 0% | Curiosity alone insufficient — WM horizon still the bottleneck |
 | 2026-04-26 | DoorKey R5 | her_goals | DoorKey | 200k | 0% | 0% | 11 goals, her=548, 4.7hr — HER can't fix OOD WM |
 | 2026-04-26 | DoorKey R6 | subgoals | DoorKey | 200k | 0% | 0% | key=596✅ door=106✅ goal=12❌ frozen — post-door OOD confirmed |
-| — | DoorKey R7 | curiosity_her | DoorKey | 200k | — | — | Curiosity + HER combined — pending |
+| — | DoorKey R7 | curiosity_her | DoorKey | — | — | — | NOT RUN — superseded by R8 (horizon length was the binding constraint, not curiosity+HER) |
 | 2026-04-26 | DoorKey R8 | short_horizon | DoorKey | 200k | 0% | 0% | H=5: key✅ door❌frozen — H too short for stage 1 (needs 6-8 steps) |
 | 2026-04-26 | DoorKey R9 | scripted_seed | DoorKey | 200k | 0% | 0% | door=211✅ goal=200❌frozen — seeder never wrote to buf_lew, WM still OOD |
 | 2026-04-26 | DoorKey R10 | protected_seed | DoorKey | 200k | 0% | 0% | door=213✅ 13 openings — WM fixed, EBM stage-2 energy wrong in right half |
