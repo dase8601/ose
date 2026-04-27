@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-04-27 — Run 20 built: two-phase EBM (hinge→softplus)
+
+### Why
+Run 18 (softplus throughout): peak=25%, goal=220 — EBM sustained but softer gradient limited early conversion to 14% vs Run 15c's 83%. Run 19 (margin=10): effectively 0%, margin too large for EBM to learn useful discrimination. Two-phase approach: hinge during OBSERVE builds sharp discrimination fast (same as Run 15c), softplus during ACT maintains it without ever saturating. One flag: `train_fn = _train_ebm if in_observe else _train_ebm_softplus`.
+
+### What
+- New file: `abm/loop_mpc_doorkey_run20.py` — condition `symbolic_two_phase_ebm`
+- OBSERVE: `_train_ebm` (hinge margin=1) — identical to Run 15c
+- ACT: `_train_ebm_softplus` (softplus) — identical to Run 18's training function
+- Phase switch: single line `train_fn = _train_ebm if in_observe else _train_ebm_softplus`
+- Heartbeat logs show `ON(hinge)` during OBSERVE, `ON(softplus)` during ACT
+- `abm_experiment.py`: added `symbolic_two_phase_ebm`
+- EXPERIMENTS.md: Run 18 final results logged (peak=25%), Run 19 closed (failed), Run 20 entry added
+
+---
+
 ## 2026-04-27 — Run 19 built: large-margin hinge EBM (stage-3 margin=10)
 
 ### Why
