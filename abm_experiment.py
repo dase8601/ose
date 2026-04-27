@@ -462,7 +462,9 @@ def main():
                                  "planner_only", "curiosity_observe", "her_goals",
                                  "subgoals", "curiosity_her", "short_horizon", "scripted_seed",
                                  "protected_seed", "post_door_neg", "dinov2_frozen",
-                                 "vjepa2_frozen", "vjepa2_symbolic", "vjepa2_adapter"],
+                                 "vjepa2_frozen", "vjepa2_symbolic", "vjepa2_adapter",
+                                 "vjepa2_symbolic_scaled", "vjepa2_adapter_late_ebm",
+                                 "symbolic_only"],
                         help="Single condition to run")
     parser.add_argument("--all",    action="store_true",
                         help="Run all conditions (Paper 3: autonomous+fixed+mpc_only+random for miniworld)")
