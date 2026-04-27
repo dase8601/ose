@@ -465,7 +465,7 @@ def main():
                                  "vjepa2_frozen", "vjepa2_symbolic", "vjepa2_adapter",
                                  "vjepa2_symbolic_scaled", "vjepa2_adapter_late_ebm",
                                  "symbolic_only", "vjepa2_symbolic_scaled_late_ebm",
-                                 "symbolic_l2_stage3"],
+                                 "symbolic_l2_stage3", "symbolic_bce_ebm"],
                         help="Single condition to run")
     parser.add_argument("--all",    action="store_true",
                         help="Run all conditions (Paper 3: autonomous+fixed+mpc_only+random for miniworld)")

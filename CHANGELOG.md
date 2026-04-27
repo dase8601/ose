@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-04-27 — Run 18 built: non-saturating EBM (softplus)
+
+### Why
+Run 17 (L2 stage-3 cost) failed: only 1 goal success in 60k ACT steps vs Run 15c's 19 in 24k. Root cause: H=8 compound prediction errors make L2 position regression too inaccurate. EBM's pattern-matching was better (83% conversion before saturation in 15c). The fix is making EBM non-saturating: replace hinge clamp with softplus loss whose gradient is sigmoid(·) — never exactly 0.
+
+### What
+- New file: `abm/loop_mpc_doorkey_run18.py` — condition `symbolic_bce_ebm`
+- Single change from Run 15c: `_train_ebm_softplus()` uses `F.softplus(e_pos - e_neg).mean()` instead of `ebm.contrastive_loss()` (hinge clamp)
+- Applied to all 3 EBM signals: subgoal matching, HER, goal-vs-post_door_neg
+- All other architecture identical to Run 15c
+- `abm_experiment.py`: added `symbolic_bce_ebm` to condition choices
+- EXPERIMENTS.md: Run 18 entry added, Run 17 mid-run status noted
+
+---
+
 ## 2026-04-27 — Run 17 built; Run 15c final results logged
 
 ### Why

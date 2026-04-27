@@ -669,6 +669,37 @@ cd /workspace/ose && git pull && python abm_experiment.py \
 
 ---
 
+### Run 18 — 2026-04-27 — symbolic_bce_ebm
+
+**File:** `abm/loop_mpc_doorkey_run18.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run18`  
+**Condition:** `symbolic_bce_ebm`
+
+| Parameter | Value |
+|-----------|-------|
+| Encoder | None — pure 5-dim symbolic state (same as Run 15c/17) |
+| Feature dim | 5 |
+| OBSERVE | 40k |
+| EBM loss | **softplus(E_pos − E_neg)** — replaces hinge clamp |
+| All stages | EBM-guided CEM (no L2, no stage separation) |
+| CEM horizon | 8, 512 samples, 64 elites, 5 iters |
+
+**Hypothesis:** Run 15c converted 83% of door-opening windows to exits before EBM saturation at ~85k ACT. Run 17 showed L2 replacement was worse (~3% conversion) because H=8 compound errors defeat position regression. The fix is to keep EBM's holistic pattern-matching but prevent gradient death. `softplus(E_pos - E_neg)` has gradient `sigmoid(E_pos - E_neg)` which is never exactly 0 — the EBM keeps learning throughout all 200k steps regardless of how well it separates goal from non-goal states. Should sustain the 83% early conversion rate through the full ACT phase.
+
+_(Result pending)_
+
+**RunPod command:**
+
+```bash
+cd /workspace/ose && git pull && python abm_experiment.py \
+  --loop-module abm.loop_mpc_doorkey_run18 \
+  --condition symbolic_bce_ebm \
+  --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 40000
+```
+
+---
+
 ## Phase 2 — Prove autonomous System M > fixed switching (Crafter)
 
 _Not started. Begins only after Phase 1 planner proves > 42% on DoorKey._
@@ -704,7 +735,8 @@ _Not started._
 | 2026-04-27 | DoorKey R15b | vjepa2_symbolic_scaled | DoorKey | 48k† | —  | — | KILLED — scaling worked (pred_ewa 0.010) but early EBM decayed it to 0.002 |
 | 2026-04-27 | DoorKey R15c | symbolic_only | DoorKey | 200k | 15% | 0% | goal 200→224, EBM saturated at stage 3 (margin→0), pred_ewa stable ~0.010 |
 | 2026-04-27 | DoorKey R16 | vjepa2_symbolic_scaled_late_ebm | DoorKey | 200k | 10% | 0% | pred_ewa=0.001 flat, goal=207, SYM_SCALE=10 insufficient — visual encoder track exhausted |
-| 2026-04-27 | DoorKey R17 | symbolic_l2_stage3 | DoorKey | 200k | — | — | L2 cost replaces EBM at stage 3 — tests saturation hypothesis |
+| 2026-04-27 | DoorKey R17 | symbolic_l2_stage3 | DoorKey | 200k | — | — | L2 cost replaces EBM at stage 3 — goal=201 after 60k ACT (failing) |
+| 2026-04-27 | DoorKey R18 | symbolic_bce_ebm | DoorKey | 200k | — | — | Softplus loss replaces hinge — non-saturating EBM for all stages |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
