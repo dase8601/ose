@@ -746,6 +746,7 @@ _Not started._
 | 2026-04-27 | DoorKey R16 | vjepa2_symbolic_scaled_late_ebm | DoorKey | 200k | 10% | 0% | pred_ewa=0.001 flat, goal=207, SYM_SCALE=10 insufficient — visual encoder track exhausted |
 | 2026-04-27 | DoorKey R17 | symbolic_l2_stage3 | DoorKey | 200k | 10% | 0% | goal=203, 4.7% conversion — H=8 compound error kills L2 position regression |
 | 2026-04-27 | DoorKey R18 | symbolic_bce_ebm | DoorKey | 200k | — | — | Softplus loss replaces hinge — non-saturating EBM for all stages |
+| 2026-04-27 | DoorKey R19 | symbolic_large_margin | DoorKey | 200k | — | — | Stage-3 hinge margin=10 — sharp gradient, harder to saturate |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-04-27 — Run 19 built: large-margin hinge EBM (stage-3 margin=10)
+
+### Why
+Run 18 (softplus) shows pred_ewa climbing to 0.013 and real success signal (15% peak) but stage-3 conversion is ~14% vs Run 15c's 83%. Softplus gradient = sigmoid(·) ≤ 1.0 is softer than hinge's sharp gradient = 1.0. Run 19 tests whether we can keep hinge's sharp gradient by raising the margin ceiling: margin=10.0 for stage-3 only. Saturation requires E_neg - E_pos > 10 — unlikely at Adam lr=3e-4 in 200k steps.
+
+### What
+- New file: `abm/loop_mpc_doorkey_run19.py` — condition `symbolic_large_margin`
+- Single change from Run 15c: `ebm.contrastive_loss(z_exit, z_rh_neg, z_g_exit, margin=10.0)` on the stage-3 signal only
+- All other signals keep margin=1.0 (stages 0/1, HER — they never saturated)
+- Running in parallel with Run 18 to compare soft vs hard non-saturation
+- `abm_experiment.py`: added `symbolic_large_margin` to condition choices
+- EXPERIMENTS.md: Run 19 entry added to summary table
+
+---
+
 ## 2026-04-27 — Run 18 built: non-saturating EBM (softplus)
 
 ### Why
