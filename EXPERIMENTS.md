@@ -614,7 +614,16 @@ EBM saturation. The contrastive hinge loss `max(0, margin - E_neg + E_pos)` reac
 
 **Hypothesis:** Run 15b showed scaling gives pred_ewa=0.010 before EBM fires. Run 15a showed delayed EBM prevents misalignment. Together: predictor trains for 80k steps with meaningful symbolic signal (cos_sim≈0.980 per tile move), reaches stable pred_ewa~0.009–0.020, then EBM activates on a stable representation. Should produce consistent success rates like Run 15c's architecture but with V-JEPA visual features.
 
-_(Result pending)_
+**Result:** peak=10.0%, final=0.0% | ~9600s  
+pred_ewa: flat 0.0008–0.0016 throughout ACT — never improved after EBM activated  
+goal grew 200 → 207 over 80k ACT steps (only 7 successes vs Run 15c's 24 in same span)  
+key=483 door=276 (stages 0/1 working via EBM ✅) | goal barely growing ❌  
+EBM activated at step 88000 as designed — delayed gate worked correctly
+
+**Why it failed:**  
+The hypothesis was wrong. SYM_SCALE=10 is insufficient — 768 visual dims still completely dominate the 772-dim cosine loss landscape. `5 × 10 = 50` effective symbolic units vs `768 × 1 = 768` visual units. "Predict z_{t+1} ≈ z_t" is still near-optimal. The predictor never escaped pred_ewa≈0.001, meaning CEM is still random search with EBM bias, not genuine planning. The 10% peak at step 110k is EBM-guided luck, identical in mechanism to Run 14b's 50% peak. Delayed EBM solved the timing problem but there was no healthy pred_ewa to protect — the visual encoder domination killed it during OBSERVE before EBM ever fired.
+
+**Conclusion:** The visual encoder track on DoorKey is exhausted. Every combination has been tried: frozen encoder, adapter, scaled symbolic augmentation, early EBM, delayed EBM, combined fixes. All produce pred_ewa≈0.001 because DINOv2/V-JEPA features are not discriminative for 6×6 synthetic grid state changes. The binding constraint is the encoder, not the architecture. Need either a task-specific encoder (RSSM trained from scratch) or a more visually diverse environment.
 
 **RunPod command:**
 
@@ -694,7 +703,7 @@ _Not started._
 | 2026-04-27 | DoorKey R15a | vjepa2_adapter_late_ebm | DoorKey | 200k | 30% | 10% | Same as R14a — adapter unstable regardless of EBM timing, pred_ewa spiky |
 | 2026-04-27 | DoorKey R15b | vjepa2_symbolic_scaled | DoorKey | 48k† | —  | — | KILLED — scaling worked (pred_ewa 0.010) but early EBM decayed it to 0.002 |
 | 2026-04-27 | DoorKey R15c | symbolic_only | DoorKey | 200k | 15% | 0% | goal 200→224, EBM saturated at stage 3 (margin→0), pred_ewa stable ~0.010 |
-| 2026-04-27 | DoorKey R16 | vjepa2_symbolic_scaled_late_ebm | DoorKey | 200k | — | — | 15b scaling + 15a delayed EBM — pending |
+| 2026-04-27 | DoorKey R16 | vjepa2_symbolic_scaled_late_ebm | DoorKey | 200k | 10% | 0% | pred_ewa=0.001 flat, goal=207, SYM_SCALE=10 insufficient — visual encoder track exhausted |
 | 2026-04-27 | DoorKey R17 | symbolic_l2_stage3 | DoorKey | 200k | — | — | L2 cost replaces EBM at stage 3 — tests saturation hypothesis |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
