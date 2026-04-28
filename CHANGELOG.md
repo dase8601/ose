@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-04-28 — Run 23 built: scripted BFS oracle for stage 3 (diagnostic)
+
+### Why
+Three runs (15c/18/20) stall at goal≈224–226 regardless of EBM loss. Run 21 tests H=12. Run 23 answers the higher-level question first: is stage 3 the only bottleneck? CEM+EBM for stages 0/1 is unchanged. Stage 2 (door→exit) replaced with the existing BFS scripted policy. If this beats 42%, stage 3 is confirmed as sole ceiling and Run 21/22 are on the right path. If it still stalls, there's a hidden stage 0/1 problem.
+
+### What
+- New file: `abm/loop_mpc_doorkey_run23.py` — condition `symbolic_scripted_stage3`
+- `_scripted_stage3_action(uw)`: BFS navigator to goal cell, only called when door is open
+- ACT loop: stage 0/1 envs → `mpc.plan_batch` (CEM+EBM, H=8); stage 2 envs → `_scripted_stage3_action` per-env
+- Eval function: `current_stage == 2` → scripted, else → `mpc.plan_single`
+- EBM still trains on stage-3 data (softplus, same as Run 20) — same training, different action selection
+- Single CEMPlanner (H=8) for stages 0/1 only
+- `abm_experiment.py`: added `symbolic_scripted_stage3`
+
+---
+
 ## 2026-04-28 — Run 21 built: H=12 for stage 2 (door→exit)
 
 ### Why
