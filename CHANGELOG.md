@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026-04-28 — Run 21 built: H=12 for stage 2 (door→exit)
+
+### Why
+Runs 15c, 18, and 20 all stall at goal≈224–226 with healthy pred_ewa (0.013+). Three independent EBM loss functions hitting the same ceiling rules out saturation — the binding constraint is the CEM horizon. H=8 cannot navigate hard door→exit layouts that require >8 steps. Run 21 keeps the full Run 20 architecture (hinge→softplus two-phase EBM) and makes exactly one change: stage-2 planning uses H=12.
+
+### What
+- New file: `abm/loop_mpc_doorkey_run21.py` — condition `symbolic_horizon12_s2`
+- Two `CEMPlanner` instances: `mpc_fast` (H=8, stages 0/1) and `mpc_deep` (H=12, stage 2)
+- ACT loop splits envs by stage — `s01_idx` → `mpc_fast.plan_batch`, `s2_idx` → `mpc_deep.plan_batch`
+- Both planners share the same predictor and receive `set_ebm(ebm)` on EBM activation
+- Eval function uses `mpc_deep if current_stage == 2 else mpc_fast`
+- `abm_experiment.py`: added `symbolic_horizon12_s2` to valid conditions
+- Everything else identical to Run 20 (hinge OBSERVE → softplus ACT, same buffers/LRs/seeds)
+
+---
+
 ## 2026-04-28 — Run 20 final: architectural ceiling confirmed at ~25%
 
 ### Result
