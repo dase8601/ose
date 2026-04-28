@@ -469,7 +469,7 @@ def main():
                                  "symbolic_large_margin", "symbolic_two_phase_ebm",
                                  "symbolic_horizon12_s2", "symbolic_scripted_stage3",
                                  "symbolic_frozen_pred_stage3", "symbolic_ppo_stage3",
-                                 "symbolic_short_horizon_s2"],
+                                 "symbolic_short_horizon_s2", "symbolic_exact_goal_s2"],
                         help="Single condition to run")
     parser.add_argument("--all",    action="store_true",
                         help="Run all conditions (Paper 3: autonomous+fixed+mpc_only+random for miniworld)")

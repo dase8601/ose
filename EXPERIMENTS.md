@@ -936,6 +936,76 @@ cd /workspace/ose && git pull && python abm_experiment.py \
 
 ---
 
+### Run 25 — 2026-04-28 — symbolic_ppo_stage3
+
+**File:** `abm/loop_mpc_doorkey_run25.py`  
+**Loop module:** `abm.loop_mpc_doorkey_run25`  
+**Condition:** `symbolic_ppo_stage3`
+
+| Parameter | Value |
+|-----------|-------|
+| Encoder | None — pure 5-dim symbolic state |
+| Feature dim | 5 |
+| OBSERVE | 40k |
+| Predictor training | OBSERVE only — frozen at ACT start (same as Run 24) |
+| EBM training | Hinge OBSERVE → Softplus ACT (same as Run 24) |
+| Stages 0/1 | CEM+EBM, H=8 512 samples 64 elites 5 iters |
+| Stage 2 (door→exit) | **PPO actor-critic (2-layer MLP, 64 hidden, 5-dim obs: agent_x/5, agent_y/5, dir/3, goal_x/5, goal_y/5)** |
+| PPO update | Every 512 stage-3 steps, 4 epochs, minibatch=64, clip=0.2, ent=0.01, vf=0.5 |
+| PPO reward | env reward + step penalty -0.005 |
+| GAE | γ=0.99, λ=0.95 |
+
+**Hypothesis:** Run 24 used oracle BFS for stage 3 — not publishable. Replace BFS with a learned PPO actor-critic. PPO observes goal position directly (`goal_x, goal_y` in obs), so each episode it knows exactly where to navigate. If PPO stage 3 reaches peak > 42%, the claim is: world model (CEM+EBM) handles multi-step subgoal discovery; RL (PPO) handles short-range navigation.
+
+**Result (partial — killed at step 120k):** peak=0.0%, final=0.0% | ~4950s  
+Final buffer: key=375 door=269 goal=207 (only 7 new successes in 80k ACT steps)  
+pred_ewa: locked at 0.0085 (frozen predictor working)  
+ppo_updates=5 at step 120k | s3_steps=2634 at step 112k  
+
+**Why it failed (sparse reward cold-start):**  
+PPO needs goal reaches to produce gradient signal, but can't reach the goal with an untrained policy. With only 5 successes in 80k ACT steps across 16 envs (7 total in 80k vs goal≈2634 stage-3 steps attempted), the policy gradient is essentially zero — every PPO update is noise. By step 120k ppo_updates=5 (one update per ~16k steps), far too sparse to learn navigation. Door is opening consistently (door=209→269, ✅) so stages 0/1 are healthy — stage 3 alone fails.
+
+The cold-start problem: BFS breaks the explore-exploit deadlock by always succeeding. PPO needs to discover the goal first. With random-initialization actions and a 6×6 grid, the probability of accidentally stepping on the goal cell within a 300-step episode is very low. Compare: goal grew from 202→207 in 80k ACT steps (PPO); 220→366 in 160k ACT steps with BFS (Run 24).
+
+**Key finding:** PPO stage 3 on sparse terminal reward cannot bootstrap from near-zero success rate. Publishable stage-3 replacement must use the world model directly, not RL. Run 26 attempts CEM H=3 for stage 3.
+
+**RunPod command:**
+
+```bash
+python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run25 \
+  --condition symbolic_ppo_stage3 --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 40000
+```
+
+---
+
+### Run 27 — 2026-04-28 — symbolic_exact_goal_s2
+
+**Bug fixed from Run 26:** DoorKey randomises the goal cell position each episode. Run 26's stage-2 CEM sampled goal latents from `goal_buf`, which aggregates terminal states across many past episodes — each with a different goal (x, y). Stages 0/1 are unaffected because `has_key=1` and `door_open=1` are binary flags with no positional content. Stage 2 navigates to the exit tile — position is the entire signal. Sampling a mixed-episode goal constructs a target that doesn't correspond to the current episode's exit, so CEM plans toward the wrong cell. The agent cannot reliably complete stage 2.
+
+**Fix:** Construct stage-2 goal from actual current-episode state:
+```python
+gp = _find_cell(envs.envs[i].unwrapped, "goal")
+active_goal_z[i] = np.array([1., 1., gp[0]/5., gp[1]/5., 0.], dtype=np.float32)
+```
+Same fix in `_eval_run27` — reads goal from eval env, not `goal_buf.sample(1)`.
+
+**Architecture:** Identical to Run 26 otherwise — H=8 stages 0/1, H=3 stage 2, frozen predictor, two-phase EBM (hinge OBSERVE → softplus ACT), 5-dim symbolic state.
+
+**Hypothesis:** With correct goal targets for stage 2, CEM H=3 should navigate door→exit reliably. If predictor is accurate enough at H=3, expect peak > 42% PPO baseline.
+
+**Status:** Pending (running on RunPod in parallel with Run 26).
+
+**RunPod command:**
+
+```bash
+python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run27 \
+  --condition symbolic_exact_goal_s2 --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 40000
+```
+
+---
+
 ## Phase 2 — Prove autonomous System M > fixed switching (Crafter)
 
 _Not started. Begins only after Phase 1 planner proves > 42% on DoorKey._
@@ -978,6 +1048,8 @@ _Not started._
 | 2026-04-28 | DoorKey R21 | symbolic_horizon12_s2 | DoorKey | 200k | 5% | 0% | H=12 compound errors worse than H=8 — flat CEM horizon scaling fails |
 | 2026-04-28 | DoorKey R23 | symbolic_scripted_stage3 | DoorKey | 200k | 25% | 5% | goal=242 past ceiling — stage 3 confirmed sole bottleneck; pred_ewa degraded 0.011→0.006 |
 | 2026-04-28 | DoorKey R24 | symbolic_frozen_pred_stage3 | DoorKey | 200k | **50%** | 10% | **BEATS 42% BASELINE** — frozen pred + BFS s3; pred_ewa locked 0.0098, goal=366 |
+| 2026-04-28 | DoorKey R25 | symbolic_ppo_stage3 | DoorKey | 120k† | 0% | 0% | KILLED — sparse reward cold-start; ppo_updates=5 at 120k, goal=207 only |
+| 2026-04-28 | DoorKey R27 | symbolic_exact_goal_s2 | DoorKey | — | — | — | PENDING — fixes R26 episode-mixing bug; exact goal pos from current env |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |

@@ -1,5 +1,27 @@
 # Changelog
 
+## 2026-04-28 — Run 27 built: fix stage-2 goal episode-mixing bug from Run 26
+
+### Why
+Run 26's stage-2 CEM sampled the goal latent from `goal_buf`, which stores terminal states from many past episodes. DoorKey randomises the goal cell position each episode reset, so `goal_buf` contains states with different (x, y) goal positions. Stages 0/1 are unaffected — `has_key=1` and `door_open=1` are binary flags independent of position. Stage 2 navigates to the exit tile — position IS the discriminating feature. Planning toward a mixed-episode average goal position produces approximately random actions; the agent cannot reliably complete stage 2.
+
+### What
+- New file: `abm/loop_mpc_doorkey_run27.py` — condition `symbolic_exact_goal_s2`
+- Stage-2 goal now constructed from `_find_cell(uw, "goal")` at goal-refresh time: `[1., 1., gx/5, gy/5, 0.]` — exact position for the current episode, never stale
+- Same fix applied in `_eval_run27`: reads goal from eval env directly instead of `goal_buf.sample(1)`
+- `_pick()` helper in eval replaced with `_pick_s01()` (stages 0/1 only) to make the asymmetry explicit
+- `abm_experiment.py`: added `symbolic_exact_goal_s2` to valid conditions
+- Everything else identical to Run 26 (H=8 stages 0/1, H=3 stage 2, frozen predictor, two-phase EBM)
+
+### How to run
+```bash
+python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run27 \
+  --condition symbolic_exact_goal_s2 --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 40000
+```
+
+---
+
 ## 2026-04-28 — Run 26 built: short-horizon CEM H=3 for stage 2 (pure world model, HWM-inspired)
 
 ### Why
