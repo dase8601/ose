@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-04-28 — Run 24 built: frozen predictor + scripted BFS stage 3
+
+### Why
+Run 23 confirmed stage 3 was the sole initial bottleneck (goal grew past 226, 87% stage-3 conversion). But pred_ewa degraded 0.011→0.006 during ACT as the replay buffer filled with goal-directed data. Door-opening rate dropped from 1/1k to 1/10k steps. Freezing the predictor at OBSERVE end keeps the CEM at peak quality throughout all 160k ACT steps. EBM continues training (softplus) independently.
+
+### What
+- New file: `abm/loop_mpc_doorkey_run24.py` — condition `symbolic_frozen_pred_stage3`
+- Predictor trains during OBSERVE only — `if in_observe: pred_loss = _train_predictor(...)`
+- EBM trains independently throughout (hinge OBSERVE → softplus ACT)
+- CEM creation decoupled from predictor training
+- Stage 3: scripted BFS (same as Run 23), everything else identical
+- `abm_experiment.py`: added `symbolic_frozen_pred_stage3`
+
+---
+
 ## 2026-04-28 — Run 23 built: scripted BFS oracle for stage 3 (diagnostic)
 
 ### Why

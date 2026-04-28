@@ -845,6 +845,7 @@ _Not started._
 | 2026-04-28 | DoorKey R20 | symbolic_two_phase_ebm | DoorKey | 200k | 25% | 0% | pred_ewa record 0.0144, goal 200→226, stalled same as 15c/18 — architectural ceiling at ~25% |
 | 2026-04-28 | DoorKey R21 | symbolic_horizon12_s2 | DoorKey | 200k | — | — | H=12 stage 2 (door→exit) vs H=8 s0/1 — targets hard layout ceiling |
 | 2026-04-28 | DoorKey R23 | symbolic_scripted_stage3 | DoorKey | 200k | — | — | CEM+EBM s0/1 + scripted BFS s2 — diagnostic: is stage 3 the only bottleneck? |
+| 2026-04-28 | DoorKey R24 | symbolic_frozen_pred_stage3 | DoorKey | 200k | — | — | Freeze predictor at OBSERVE end — prevents pred_ewa degradation during ACT |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
