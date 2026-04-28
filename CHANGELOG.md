@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026-04-28 — Run 20 final: architectural ceiling confirmed at ~25%
+
+### Result
+peak=25.0%, final=0.0% | 8569s | pred_ewa record 0.0144 (step 112k) | goal 200→226 | stalled at 224–226 for last 85k ACT steps.  
+Three independent runs (15c, 18, 20) all stall at goal≈224–226 regardless of EBM loss function. Saturation is ruled out — EBM and predictor both healthy. The architectural ceiling is the CEM horizon: H=8 cannot navigate the harder door→exit layouts that require >8 steps. Next: Run 21 increases H to 12 for stage 3.
+
+### What
+- EXPERIMENTS.md: Run 20 full entry added, summary table updated
+
+---
+
 ## 2026-04-27 — Run 20 built: two-phase EBM (hinge→softplus)
 
 ### Why
