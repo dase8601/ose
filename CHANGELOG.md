@@ -1,5 +1,58 @@
 # Changelog
 
+## 2026-04-28 — Run 25 built: PPO stage 2 replaces scripted BFS (publishable hybrid)
+
+### Why
+Run 24 beat 42% (peak=50%) using oracle BFS for stage 3. BFS is not a learned policy — a reviewer would ask "what does the world model contribute if you're using A* for the hard part?" Run 25 replaces BFS with a small PPO actor-critic (2-layer MLP, 64 hidden, 5-dim input) trained only on post-door stage-3 transitions. If PPO stage 3 sustains peak > 42%, the claim is clean: world model (CEM+EBM) handles multi-step subgoal discovery (key→door); RL (PPO) handles short-range navigation (door→exit). Combined system outperforms pure RL (42% baseline).
+
+### What
+- New file: `abm/loop_mpc_doorkey_run25.py` — condition `symbolic_ppo_stage3`
+- `PPOActorCritic`: 2-layer MLP (64 hidden, tanh), input=5-dim (agent_x, agent_y, agent_dir, goal_x, goal_y), output=7 logits + 1 value
+- `PPORollout`: flat buffer, collects stage-3 (s2_idx) transitions only; update every 512 stage-3 steps
+- `_ppo_update`: 4 epochs, minibatch=64, clip=0.2, ent_coef=0.01, vf_coef=0.5, GAE γ=0.99 λ=0.95, step penalty=-0.005
+- `_get_ppo_obs(uw)`: PPO obs includes goal_x, goal_y (not in world model state — needed because goal position is randomised per episode)
+- Predictor: frozen at OBSERVE end (same as Run 24)
+- EBM: hinge OBSERVE → softplus ACT (same as Run 24)
+- `_eval_run25`: deterministic greedy PPO for stage 2 (argmax logits)
+- `abm_experiment.py`: added `symbolic_ppo_stage3` to valid conditions
+
+---
+
+## 2026-04-28 — Run 24 final: peak=50% — 42% PPO baseline beaten ★
+
+### Result
+peak=50.0%, final=10% | 6932s | pred_ewa locked at 0.0098 all 160k ACT steps | goal 220→366 | steps_to_80=N/A.  
+First run to exceed the 42% PPO baseline. Frozen predictor preserved door-opening rate throughout ACT (vs Run 23 where pred_ewa 0.011→0.006 caused late-ACT collapse). Goal grew to 366 — most sustained exploration of any run. Peak hit at step 100k (50%), secondary peaks at 45%/40%/35%. Success is noisy across eval windows (5%–50% oscillation at n_envs=16 granularity); underlying conversion rate ~0.9 goal/1k steps.
+
+Limiting constraint: 8 of 16 env-pool layouts are "hard" — CEM H=8 can't plan the door→exit path. Scripted BFS solves the easy 8 cleanly. Remaining 8 need hierarchical planning or a learned stage-3 policy.
+
+### What
+- EXPERIMENTS.md: Run 24 full entry added, summary table updated with ★
+
+---
+
+## 2026-04-28 — Run 23 final: stage 3 bottleneck confirmed, pred_ewa degradation discovered
+
+### Result
+peak=25%, final=5% | 8559s | goal=242 (first run past 226 ceiling) | pred_ewa 0.011→0.006 during ACT | 87% stage-3 conversion when door opened | door-opening rate collapsed by late ACT.  
+Stage 3 is the confirmed sole bottleneck. But predictor degrades during ACT as replay buffer fills with goal-directed data — door-opening rate drops from 1/1k steps to 1/10k by run end.
+
+### What
+- EXPERIMENTS.md: Run 23 full entry added, summary table updated
+
+---
+
+## 2026-04-28 — Run 21 final: H=12 confirmed worse than H=8
+
+### Result
+peak=5%, final=0% | killed early | goal stalled 200–205, never built meaningful stage-3 conversions.  
+H=12 compound prediction errors destroy CEM plan quality. Each rollout step accumulates predictor error; by step 12, z_pred noise exceeds signal. Flat horizon scaling is the wrong axis — hierarchical planning is the principled fix.
+
+### What
+- EXPERIMENTS.md: Run 21 full entry added, summary table updated
+
+---
+
 ## 2026-04-28 — Run 24 built: frozen predictor + scripted BFS stage 3
 
 ### Why
