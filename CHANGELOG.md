@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026-04-28 — Run 26 built: short-horizon CEM H=3 for stage 2 (pure world model, HWM-inspired)
+
+### Why
+Run 24 proved the predictor is accurate at H=8 for stages 0/1 but used oracle BFS for stage 2 (not publishable). Run 25 adds PPO for stage 2 (hybrid). Run 26 keeps everything in the world-model framework — no BFS, no RL — using the HWM paper insight (arXiv 2604.03208, Figure 6): low-level predictors are most accurate at H≤4 due to compound error at longer horizons. DoorKey stage 2 is a short navigation (~4-5 cells). CEM at H=3 replanning every step stays in the accurate predictor regime while covering the full path through receding-horizon iteration.
+
+### What
+- New file: `abm/loop_mpc_doorkey_run26.py` — condition `symbolic_short_horizon_s2`
+- `CEM_HORIZON_S2 = 3` (vs `CEM_HORIZON = 8` for stages 0/1)
+- Two CEMPlanner instances sharing same frozen predictor and EBM: `mpc` (H=8) and `mpc_s2` (H=3)
+- Stage 2 goal sampling from `goal_buf` (seeded with ~150 scripted successes, refreshed every 64 steps)
+- `_eval_run26`: uses `mpc_s2.plan_single` for stage 2, goal from `goal_buf`
+- Heartbeat log includes `s2_envs=N` count
+- `abm_experiment.py`: added `symbolic_short_horizon_s2` to valid conditions
+
+### How to run
+```bash
+python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run26 \
+  --condition symbolic_short_horizon_s2 --device cuda --env doorkey \
+  --steps 200000 --n-envs 16 --observe-steps 40000
+```
+
+---
+
 ## 2026-04-28 — Run 25 built: PPO stage 2 replaces scripted BFS (publishable hybrid)
 
 ### Why
