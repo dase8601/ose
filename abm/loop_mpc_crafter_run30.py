@@ -368,22 +368,27 @@ def _train_step(
 def _manager_update(
     manager: SubgoalManager,
     mgr_opt: torch.optim.Optimizer,
-    log_probs: List[torch.Tensor],
+    decisions: List[Tuple[torch.Tensor, torch.Tensor]],  # (z_cur, code_idx) pairs
     returns: List[float],
     device: str,
 ) -> float:
     """
-    REINFORCE: loss = -mean(log_prob * normalized_return) - entropy_bonus.
-    log_probs retain their computation graphs through manager.policy parameters.
-    Returns the scalar policy loss value for logging.
+    REINFORCE: recomputes log_probs fresh from current policy at update time.
+    Storing (z_cur, code_idx) instead of raw log_prob tensors avoids stale
+    computation graph errors when Adam modifies weights in-place between
+    collection and the backward pass.
     """
-    if not log_probs:
+    if not decisions:
         return 0.0
-    lp  = torch.stack(log_probs)                                          # (N,) with grad
-    ret = torch.tensor(returns, dtype=torch.float32, device=device)       # (N,) no grad
+    z_batch   = torch.cat([z for z, _ in decisions], dim=0).to(device)   # (N, z_dim)
+    idx_batch = torch.cat([c for _, c in decisions], dim=0).to(device)   # (N,) long
+    logits    = manager.policy(z_batch)                                   # fresh forward
+    log_probs = torch.distributions.Categorical(logits=logits).log_prob(idx_batch)  # (N,) with grad
+
+    ret = torch.tensor(returns, dtype=torch.float32, device=device)
     if ret.std() > 1e-6:
         ret = (ret - ret.mean()) / (ret.std() + 1e-8)
-    policy_loss = -(lp * ret).mean()
+    policy_loss = -(log_probs * ret).mean()
     mgr_opt.zero_grad()
     policy_loss.backward()
     torch.nn.utils.clip_grad_norm_(manager.policy.parameters(), 1.0)
@@ -536,15 +541,15 @@ def run_crafter_run30_loop(
     mpc:      Optional[CEMPlanner]             = None
 
     # ── Per-env manager state ──
-    # mgr_log_prob[i]: scalar tensor with grad through manager.policy, or None
-    mgr_log_prob:   List[Optional[torch.Tensor]] = [None] * n_envs
+    # mgr_decision[i]: (z_cur detached, code_idx detached) for last subgoal pick, or None
+    mgr_decision:   List[Optional[Tuple[torch.Tensor, torch.Tensor]]] = [None] * n_envs
     mgr_reward_acc: np.ndarray = np.zeros(n_envs, dtype=np.float32)
     mgr_steps:      np.ndarray = np.full(n_envs, H_MANAGER, dtype=np.int32)
     active_goal_z:  List[Optional[torch.Tensor]] = [None] * n_envs
 
     # ── REINFORCE accumulation buffer ──
-    mgr_lp_buf:  List[torch.Tensor] = []   # log_prob tensors — retain grad
-    mgr_ret_buf: List[float]        = []   # corresponding accumulated returns
+    mgr_decisions_buf: List[Tuple[torch.Tensor, torch.Tensor]] = []  # (z_cur, code_idx)
+    mgr_ret_buf:       List[float] = []
 
     # ── Vectorised envs ──
     envs = make_crafter_vec_env(n_envs, seed=seed, use_async=False)
@@ -597,18 +602,19 @@ def run_crafter_run30_loop(
             with torch.no_grad():
                 z_cur_t = encoder(_pix_batch_to_tensor(pix_cur_np, device))  # (n_envs, Z_DIM)
 
-            # Manager subgoal selection (outside no_grad — log_prob needs grad)
+            # Manager subgoal selection — store (z_cur, code_idx) for recompute at update
             for i in range(n_envs):
                 if active_goal_z[i] is None or mgr_steps[i] >= H_MANAGER:
                     # Flush completed subgoal experience
-                    if mgr_log_prob[i] is not None:
-                        mgr_lp_buf.append(mgr_log_prob[i])
+                    if mgr_decision[i] is not None:
+                        mgr_decisions_buf.append(mgr_decision[i])
                         mgr_ret_buf.append(float(mgr_reward_acc[i]))
 
-                    z_i = z_cur_t[i:i+1]              # (1, Z_DIM), no grad
-                    z_g, _, lp = manager.select(z_i)   # lp retains grad through policy
-                    active_goal_z[i]  = z_g.detach()   # CEM needs no grad
-                    mgr_log_prob[i]   = lp
+                    z_i = z_cur_t[i:i+1]   # (1, Z_DIM), already no_grad from encoder
+                    with torch.no_grad():
+                        z_g, code_idx, _ = manager.select(z_i)
+                    active_goal_z[i]  = z_g.detach()
+                    mgr_decision[i]   = (z_i.detach().cpu(), code_idx.detach().cpu())
                     mgr_reward_acc[i] = 0.0
                     mgr_steps[i]      = 0
 
@@ -645,11 +651,11 @@ def run_crafter_run30_loop(
 
                 if dones[i]:
                     # Flush on episode end
-                    if mgr_log_prob[i] is not None:
-                        mgr_lp_buf.append(mgr_log_prob[i])
+                    if mgr_decision[i] is not None:
+                        mgr_decisions_buf.append(mgr_decision[i])
                         mgr_ret_buf.append(float(mgr_reward_acc[i]))
                     active_goal_z[i]  = None
-                    mgr_log_prob[i]   = None
+                    mgr_decision[i]   = None
                     mgr_reward_acc[i] = 0.0
                     mgr_steps[i]      = H_MANAGER  # force subgoal pick at next step
 
@@ -663,9 +669,9 @@ def run_crafter_run30_loop(
                 sigreg_ewa = rl if sigreg_ewa is None else 0.95 * sigreg_ewa + 0.05 * rl
 
         # ── REINFORCE update for manager (ACT only) ──
-        if not in_observe and len(mgr_lp_buf) >= MGR_BATCH:
-            ml = _manager_update(manager, mgr_opt, mgr_lp_buf, mgr_ret_buf, device)
-            mgr_lp_buf.clear()
+        if not in_observe and len(mgr_decisions_buf) >= MGR_BATCH:
+            ml = _manager_update(manager, mgr_opt, mgr_decisions_buf, mgr_ret_buf, device)
+            mgr_decisions_buf.clear()
             mgr_ret_buf.clear()
             mgr_loss_ewa = (ml if mgr_loss_ewa is None
                             else 0.95 * mgr_loss_ewa + 0.05 * ml)
