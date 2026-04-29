@@ -291,6 +291,9 @@ def _record_episode(
     Run one eval episode and return frames as (T, C, H, W) uint8 for wandb.Video.
     Uses manager subgoals if provided, otherwise falls back to goal_buf sampling.
     """
+    was_enc_train = encoder.training
+    was_pred_train = predictor.training
+    was_mgr_train  = manager.training if manager is not None else False
     encoder.eval(); predictor.eval()
     if manager is not None:
         manager.eval()
@@ -331,6 +334,10 @@ def _record_episode(
         mgr_steps_ep += 1
 
     env.close()
+    # Restore training state so OBSERVE training isn't silently disabled
+    if was_enc_train:  encoder.train()
+    if was_pred_train: predictor.train()
+    if manager is not None and was_mgr_train: manager.train()
     # (T, H, W, 3) → (T, C, H, W) for wandb.Video
     return np.stack(frames).transpose(0, 3, 1, 2)
 
