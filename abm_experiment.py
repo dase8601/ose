@@ -102,7 +102,7 @@ def plot_learning_curves(results: dict, save_dir: Path, env_type: str) -> Path:
 
     for cond, data in results.items():
         steps = data["env_steps"]
-        sr    = data["success_rate"]
+        sr    = data.get("success_rate") or data.get("crafter_score", [])
         if not steps:
             continue
         color = COLORS.get(cond, "#888888")
@@ -471,7 +471,8 @@ def main():
                                  "symbolic_frozen_pred_stage3", "symbolic_ppo_stage3",
                                  "symbolic_short_horizon_s2", "symbolic_exact_goal_s2",
                                  "lewm_doorkey_pixels",
-                                 "lewm_crafter_pixels"],
+                                 "lewm_crafter_pixels",
+                                 "lewm_crafter_hierarchy"],
                         help="Single condition to run")
     parser.add_argument("--all",    action="store_true",
                         help="Run all conditions (Paper 3: autonomous+fixed+mpc_only+random for miniworld)")

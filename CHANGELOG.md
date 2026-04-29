@@ -1,5 +1,33 @@
 # Changelog
 
+## 2026-04-29 — Run 30 built: Director-lite hierarchy on Crafter pixels
+
+### Why
+Run 29 confirmed a hard ceiling at ~27% arithmetic score with tier3/tier4=0%. Flat L2 CEM with random goals cannot plan prerequisite chains (wood→table→pickaxe→iron). Run 30 adds a SubgoalManager (Director-style, arXiv 2206.04114): a small MLP trained with REINFORCE that maps z_cur → discrete code → codebook subgoal. Worker (CEM) plans toward the subgoal with cosine distance. Ordering expected to emerge from the manager learning which subgoal sequences unlock achievements.
+
+### What
+- New file: `abm/loop_mpc_crafter_run30.py` — condition `lewm_crafter_hierarchy`
+- `SubgoalManager`: 3-layer MLP → Categorical(K=64) → codebook lookup; trained with REINFORCE
+- `_build_codebook()`: sklearn MiniBatchKMeans on all OBSERVE replay z at OBSERVE→ACT transition
+- `_manager_update()`: REINFORCE with normalized returns, entropy_coef=0.01, grad_clip=1.0
+- CEM distance changed from "l2" → "cosine" (Director max-cosine similarity)
+- Manager horizon H_MANAGER=50: worker gets 50 primitive steps per subgoal before manager re-selects
+- Manager checkpoint saved alongside encoder+predictor
+- `abm_experiment.py`: added `lewm_crafter_hierarchy` to valid conditions; fixed `success_rate` KeyError in `plot_learning_curves` (now falls back to `crafter_score`)
+- wandb logging: scalars every 10k steps (score, pred_loss, sigreg_loss, mgr_loss, per-tier breakdown); video every 50k steps via `_record_episode()` → wandb.Video (T, C, H, W) at 10 fps; project `lewm-crafter` run name `run30-lewm_crafter_hierarchy`
+- World model training (OBSERVE phase): unchanged from Run 29
+
+### How to run
+```bash
+cd /workspace/ose
+pip install timm crafter scikit-learn
+python abm_experiment.py --loop-module abm.loop_mpc_crafter_run30 \
+  --condition lewm_crafter_hierarchy --device cuda --env crafter \
+  --steps 600000 --n-envs 8
+```
+
+---
+
 ## 2026-04-29 — Run 29 built: LeWM on Crafter pixels (same arch, first Crafter test)
 
 ### Why

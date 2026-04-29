@@ -1040,6 +1040,62 @@ python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run28 \
   --steps 300000 --n-envs 8
 ```
 
+### Run 29 — 2026-04-29 — lewm_crafter_pixels
+
+**Why:** Validate that ViT-Tiny + online SIGReg + L2 CEM scales from DoorKey to Crafter (64×64, 17 actions, 22 achievements). Same architecture, no manual stages — open-ended goal-conditioned exploration (random goals from replay, biased toward achievement-positive obs).
+
+**Results:**
+- Best score: **31.8%** at step 20k (during OBSERVE — random exploration)
+- ACT ceiling: **22.7%** sustained, peak 27.3%
+- tier1=67%, tier2=40%, tier3=0%, tier4=0%
+- SIGReg held: sig_ewa 1.24→0.21, stable — no representation collapse ✓
+- pred_ewa oscillated 0.003–0.11 throughout — online distribution shift, not a bug
+- Runtime: 8937s (~2.5 hours) on 4090
+
+**Key findings:**
+1. Architecture validated on Crafter — SIGReg prevents collapse on complex 64×64 scenes ✓
+2. CEM with random goals beats pure random (~5-10%) — world model is providing signal ✓
+3. Hard ceiling at ~27% from lack of prerequisite awareness — tier3/4 locked at 0%
+4. Flat CEM cannot plan chains like wood→table→stone_pickaxe→iron
+5. Confirms: hierarchy with ordering is the right next step
+
+**What's needed for Run 30:** Teach the agent that some goals should come before others — without hardcoding the tech tree. The order must be discovered from experience.
+
+---
+
+### Run 30 — 2026-04-29 — lewm_crafter_hierarchy
+
+**Why:** Run 29 confirmed the prerequisite ordering wall — tier3/4 locked at 0% because flat CEM with random goals cannot plan chains like wood→table→pickaxe→iron. Run 30 adds a Director-style SubgoalManager (arXiv 2206.04114) on top of the frozen Run 29 encoder + predictor. The manager learns to sequence subgoals by receiving +1 reward whenever the worker achieves something. Ordering is not hardcoded — it must emerge from the manager discovering that some subgoal sequences lead to reward and others don't.
+
+**Architecture changes from Run 29:**
+- `SubgoalManager`: 3-layer MLP → Categorical(K=64) → codebook entry z_goal
+- Codebook: MiniBatchKMeans on all OBSERVE replay z (30k encodings → 64 centers)
+- Manager trained with REINFORCE: policy_loss = -mean(log_prob × normalized_return) - 0.01×entropy
+- CEM distance: "cosine" (Director max-cosine) replacing L2
+- Manager horizon H_MANAGER=50: worker gets 50 primitive steps per subgoal
+- OBSERVE phase: identical to Run 29 (world model convergence only)
+
+**Hyperparameters:**
+| Param | Value |
+|-------|-------|
+| N_CODES | 64 |
+| H_MANAGER | 50 |
+| MGR_LR | 3e-4 |
+| MGR_BATCH | 32 decisions/update |
+| ENTROPY_COEF | 0.01 |
+| OBSERVE | 300k steps |
+| ACT | 300k steps |
+| CEM distance | cosine |
+
+**Success criteria:**
+- OBSERVE: pred_ewa < 0.05 by step 150k (same as Run 29)
+- ACT: tier3 > 0% by step 200k — any crafted tool means ordering emerged
+- ACT: overall score > 27% (Run 29 ceiling) — manager adds value above random goals
+
+**Hypothesis:** The manager's REINFORCE signal propagates backward through subgoal choices. To unlock an iron pickaxe (+1), the manager must have previously selected wood→table→pickaxe subgoals. The policy gradient rewards the correct ordering sequence.
+
+**Results:** _Pending_
+
 ---
 
 ## Phase 2 — Prove autonomous System M > fixed switching (Crafter)
@@ -1087,7 +1143,7 @@ _Not started._
 | 2026-04-28 | DoorKey R25 | symbolic_ppo_stage3 | DoorKey | 120k† | 0% | 0% | KILLED — sparse reward cold-start; ppo_updates=5 at 120k, goal=207 only |
 | 2026-04-28 | DoorKey R27 | symbolic_exact_goal_s2 | DoorKey | 200k | 20%* | 0% | Bug fixed but 5-dim symbolic ceiling confirmed; goal 200→204 over 100k ACT steps; *peak during OBSERVE only |
 | 2026-04-29 | DoorKey R28 | lewm_doorkey_pixels | DoorKey | — | — | — | PENDING — ViT-Tiny + SIGReg + L2 CEM; validates LeWM pixel architecture before Crafter |
-| 2026-04-29 | Crafter R29 | lewm_crafter_pixels | Crafter | — | — | — | PENDING — same arch as R28, no manual stages, random goal exploration, achievement score metric |
+| 2026-04-29 | Crafter R29 | lewm_crafter_pixels | Crafter | 600k | 31.8% | 22.7% | t1=67% t2=40% t3=0% t4=0% ceiling; SIGReg stable (sig=0.21); tier3/4 locked — flat CEM can't plan prerequisites |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
