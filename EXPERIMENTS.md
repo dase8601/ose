@@ -1094,6 +1094,35 @@ python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run28 \
 
 **Hypothesis:** The manager's REINFORCE signal propagates backward through subgoal choices. To unlock an iron pickaxe (+1), the manager must have previously selected wood→table→pickaxe subgoals. The policy gradient rewards the correct ordering sequence.
 
+**Results:** _In progress (step ~440k/600k as of 2026-04-29)_
+- ACT scores: 13.6% → 22.7% → 27.3%, oscillating at Run 29 ceiling
+- tier3=0% throughout ACT phase — manager not yet producing tier3
+- mgr_loss diverging negatively (-0.009 → -0.234) — policy collapsing to confident but wrong subgoals
+- Root cause: H_MANAGER=50 too short for tier3 chains; REINFORCE reward near-zero in most periods
+
+---
+
+### Run 31 — 2026-04-29 — lewm_crafter_hierarchy_v2
+
+**Why:** Run 30 confirmed the two architectural problems: (1) H_MANAGER=50 too short for prerequisite chains that take 150-200 primitive steps, causing REINFORCE to assign credit to the wrong subgoal periods; (2) achievement reward too sparse to give the manager meaningful signal — most 50-step periods have R=0.
+
+**Two fixes:**
+1. H_MANAGER 50 → 150: each subgoal period now covers the full length of a prerequisite chain
+2. Cosine progress intrinsic reward: `+0.5 * max(0, Δcos_sim)` at every step — manager gets dense signal teaching it which codebook entries the CEM can actually navigate toward
+
+**Hyperparameters:**
+| Param | Value | Change from Run 30 |
+|-------|-------|-------------------|
+| H_MANAGER | 150 | was 50 |
+| MGR_BATCH | 16 | was 32 |
+| INTRINSIC_COEF | 0.5 | new |
+| Everything else | unchanged | — |
+
+**Success criteria:**
+- ACT: tier3 > 0% — any crafted advanced tool means hierarchy + intrinsic reward enabled prerequisite learning
+- ACT: mgr_loss stable (not diverging negatively) — intrinsic reward prevents policy collapse
+- ACT: score > 27.3% (Run 30 ceiling)
+
 **Results:** _Pending_
 
 ---

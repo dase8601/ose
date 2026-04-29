@@ -1,5 +1,30 @@
 # Changelog
 
+## 2026-04-29 — Run 31 built: Director-lite with longer horizon + cosine intrinsic reward
+
+### Why
+Run 30 diagnosed two problems: H_MANAGER=50 is too short for tier3 prerequisite chains (~150-200 steps), and sparse achievement rewards give REINFORCE near-zero signal in most subgoal periods (manager can't learn). Two targeted fixes: longer horizon covers full prerequisite chains; cosine progress intrinsic reward provides dense signal in every step.
+
+### What
+- New file: `abm/loop_mpc_crafter_run31.py` — condition `lewm_crafter_hierarchy_v2`
+- H_MANAGER: 50 → 150 (covers wood→table→pickaxe chain length)
+- MGR_BATCH: 32 → 16 (more frequent updates for longer horizon)
+- INTRINSIC_COEF = 0.5: cosine progress reward added at every ACT step
+- `prev_cos_sim[n_envs]`: tracks per-env cosine baseline, reset on new subgoal/episode end
+- Total manager reward = achievement_reward + 0.5 * sum(max(0, Δcos_sim))
+- `abm_experiment.py`: added `lewm_crafter_hierarchy_v2` to valid conditions
+
+### How to run
+```bash
+cd /workspace/ose
+git pull
+python abm_experiment.py --loop-module abm.loop_mpc_crafter_run31 \
+  --condition lewm_crafter_hierarchy_v2 --device cuda --env crafter \
+  --steps 600000 --n-envs 8
+```
+
+---
+
 ## 2026-04-29 — Run 30 built: Director-lite hierarchy on Crafter pixels
 
 ### Why
