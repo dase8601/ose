@@ -1,5 +1,58 @@
 # Changelog
 
+## 2026-04-29 — Run 29 built: LeWM on Crafter pixels (same arch, first Crafter test)
+
+### Why
+Same architecture as Run 28 validated on Crafter. Validates that ViT-Tiny + online SIGReg + L2 CEM is not overfitted to DoorKey's simple grid structure. No manual stages — uses open-ended goal-conditioned exploration (random goals from replay, biased toward achievement-positive obs).
+
+### What
+- New file: `abm/loop_mpc_crafter_run29.py` — condition `lewm_crafter_pixels`
+- `ViTTinyEncoder`: img_size=64 (Crafter native, 4×4=16 patches), z_dim=256
+- `PixelReplayBuffer`: 30k × 64 × 64 × 3 ≈ 368 MB
+- `GoalPixelBuffer`: flat deque (no bucketing) — 70% from achievement-positive obs, 30% from replay
+- No scripted seeder, no manual stages — pure open-ended goal discovery
+- Training: identical to Run 28 (MSE + SIGReg λ=0.05, grad clip 1.0)
+- Eval metric: Crafter achievement score (fraction of 22 achievements unlocked)
+- `abm_experiment.py`: added `lewm_crafter_pixels` to valid conditions
+
+### How to run
+```bash
+cd /workspace/ose
+pip install timm crafter
+python abm_experiment.py --loop-module abm.loop_mpc_crafter_run29 \
+  --condition lewm_crafter_pixels --device cuda --env crafter \
+  --steps 600000 --n-envs 8
+```
+
+---
+
+## 2026-04-29 — Run 28 built: LeWM on DoorKey pixels (ViT-Tiny + SIGReg + L2 CEM)
+
+### Why
+Run 27 confirmed the hard ceiling of 5-dim symbolic state. Even with exact goal positions, CEM H=3 cannot navigate stage-2 (goal counter 200→204 over 100k+ ACT steps). Root cause: adjacent grid cells differ by 0.2 in the symbolic space — indistinguishable after H predictor steps under compound error. The fix is a metrically meaningful latent space where SIGReg (arXiv 2603.19312) spreads representations so L2 distance creates real CEM signal. This architecture (ViT-Tiny encoder + online SIGReg) requires no symbolic features and scales unchanged to Crafter and beyond.
+
+### What
+- New file: `abm/loop_mpc_doorkey_run28.py` — condition `lewm_doorkey_pixels`
+- `ViTTinyEncoder`: timm `vit_tiny_patch16_224`, img_size=48, projected to z_dim=256
+- `PixelGoalBuffer`: stores raw pixel obs bucketed by (col, row) goal-cell position; encodes on-the-fly with frozen encoder at plan time → no episode-mixing bug, no stale embeddings
+- `PixelReplayBuffer`: pre-allocated numpy array (50k × 48 × 48 × 3), ~346MB
+- Training: `MSE(z_pred, sg(z_next)) + 0.05 * sigreg(z_t)` every 16 vectorised steps
+- Reused unchanged: `Predictor` and `sigreg()` from `world_model.py`; `CEMPlanner(distance="l2")` from `cem_planner.py` (L2 path already implemented)
+- OBSERVE+ACT: 150k OBSERVE trains encoder+predictor; encoder+predictor frozen at ACT start
+- Three manual stages identical to R26/27 logic but now in pixel/latent space
+- `abm_experiment.py`: added `lewm_doorkey_pixels` to valid conditions
+
+### How to run
+```bash
+cd /workspace/ose
+pip install timm
+python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run28 \
+  --condition lewm_doorkey_pixels --device cuda --env doorkey \
+  --steps 300000 --n-envs 8
+```
+
+---
+
 ## 2026-04-28 — Run 27 built: fix stage-2 goal episode-mixing bug from Run 26
 
 ### Why

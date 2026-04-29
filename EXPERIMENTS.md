@@ -994,14 +994,50 @@ Same fix in `_eval_run27` — reads goal from eval env, not `goal_buf.sample(1)`
 
 **Hypothesis:** With correct goal targets for stage 2, CEM H=3 should navigate door→exit reliably. If predictor is accurate enough at H=3, expect peak > 42% PPO baseline.
 
-**Status:** Pending (running on RunPod in parallel with Run 26).
+**Result:** FAILED — bug fix alone insufficient.
+- Peak 20% at step=30k occurred during OBSERVE (from scripted seeding), not ACT
+- Throughout ACT: 0% success
+- Goal counter: 200→204 over 100k+ ACT steps — essentially zero stage-2 completions
+- pred_ewa=0.0087 (predictor accurate) — failure is in the representation, not the predictor
+
+**Root cause:** 5-dim symbolic state `[has_key, door_open, x/5, y/5, dir/3]` is too coarse. CEM at H=3 cannot distinguish adjacent grid cells reliably — the L2 distance between neighboring positions is tiny (0.2 per cell) and gets washed out by predictor error over 3 steps. Even with exact goal positions, the latent cost landscape has no meaningful gradient for CEM to climb.
+
+**What this means:** The symbolic state ceiling is confirmed. No amount of horizon tuning, EBM training, or bug-fixing will unlock >25% with 5-dim symbolic state. Need richer pixel-based latent space. → **Run 28: LeWM on DoorKey pixels.**
+
+---
+
+### Run 28 — 2026-04-29 — lewm_doorkey_pixels
+
+**Why:** Runs 26/27 proved the ceiling of 5-dim symbolic state. The fix needed is a *metrically meaningful* latent space where L2 distance `||ẑ_H - z_goal||²` creates useful CEM gradients. LeWM (arXiv 2603.19312) achieves this via SIGReg: enforces near-Gaussian distribution on random projections of z, spreading representations across the latent space and preventing collapse. With SIGReg + pixel encoder, the same L2 CEM that failed on symbolic state should now navigate reliably — adjacent grid cells map to meaningfully different z vectors.
+
+**Architecture (scalable to Crafter and beyond):**
+- ViT-Tiny encoder (timm, 5M params, img_size=48, patch_size=16, z_dim=256)
+- MLP predictor (Predictor from world_model.py, hidden=512)
+- SIGReg λ=0.05 (sigreg() from world_model.py, 512 random projections)
+- CEMPlanner(distance="l2") — already implemented, no changes needed
+- OBSERVE+ACT: 150k OBSERVE (train encoder+predictor), 150k ACT (frozen, plan)
+- PixelGoalBuffer bucketed by goal-cell position (no episode-mixing bug from R26)
+
+**Three manual stages (same as R26/27, now in pixel/latent space):**
+- Stage 0: CEM toward key-cell z_embed (key_buf bucketed by key position)
+- Stage 1: CEM toward door-cell z_embed (door_buf bucketed by door position)
+- Stage 2: CEM toward exit-cell z_embed from live env — reads `_find_cell(uw, "goal")` for correct bucket
+
+**Hypothesis:** SIGReg forces spread-out representations → L2 CEM gets real signal. Expect:
+- OBSERVE: pred_ewa drops below 0.05 by step 100k (encoder + predictor converge)
+- OBSERVE: sigreg_loss stabilizes (no representation collapse)
+- ACT: stage-2 goal counter grows >10% per 50k ACT steps
+- ACT: eval success rate >15% by end of run
+
+**Status:** PENDING
 
 **RunPod command:**
-
 ```bash
-python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run27 \
-  --condition symbolic_exact_goal_s2 --device cuda --env doorkey \
-  --steps 200000 --n-envs 16 --observe-steps 40000
+cd /workspace/ose
+pip install timm
+python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run28 \
+  --condition lewm_doorkey_pixels --device cuda --env doorkey \
+  --steps 300000 --n-envs 8
 ```
 
 ---
@@ -1049,7 +1085,9 @@ _Not started._
 | 2026-04-28 | DoorKey R23 | symbolic_scripted_stage3 | DoorKey | 200k | 25% | 5% | goal=242 past ceiling — stage 3 confirmed sole bottleneck; pred_ewa degraded 0.011→0.006 |
 | 2026-04-28 | DoorKey R24 | symbolic_frozen_pred_stage3 | DoorKey | 200k | **50%** | 10% | **BEATS 42% BASELINE** — frozen pred + BFS s3; pred_ewa locked 0.0098, goal=366 |
 | 2026-04-28 | DoorKey R25 | symbolic_ppo_stage3 | DoorKey | 120k† | 0% | 0% | KILLED — sparse reward cold-start; ppo_updates=5 at 120k, goal=207 only |
-| 2026-04-28 | DoorKey R27 | symbolic_exact_goal_s2 | DoorKey | — | — | — | PENDING — fixes R26 episode-mixing bug; exact goal pos from current env |
+| 2026-04-28 | DoorKey R27 | symbolic_exact_goal_s2 | DoorKey | 200k | 20%* | 0% | Bug fixed but 5-dim symbolic ceiling confirmed; goal 200→204 over 100k ACT steps; *peak during OBSERVE only |
+| 2026-04-29 | DoorKey R28 | lewm_doorkey_pixels | DoorKey | — | — | — | PENDING — ViT-Tiny + SIGReg + L2 CEM; validates LeWM pixel architecture before Crafter |
+| 2026-04-29 | Crafter R29 | lewm_crafter_pixels | Crafter | — | — | — | PENDING — same arch as R28, no manual stages, random goal exploration, achievement score metric |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
