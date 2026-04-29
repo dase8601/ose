@@ -726,16 +726,19 @@ def run_crafter_run30_loop(
 
             # ── W&B video logging (every VIDEO_LOG_INTERVAL steps) ──
             if _wandb is not None and env_step % VIDEO_LOG_INTERVAL < n_envs:
-                frames = _record_episode(
-                    encoder, predictor, goal_buf, replay, device,
-                    manager=manager if not in_observe else None,
-                    seed=7777 + env_step,
-                )
-                _wandb.log(
-                    {"eval_video": _wandb.Video(frames, fps=10, format="mp4",
-                                                caption=f"step={env_step} mode={mode_str} score={score:.1%}")},
-                    step=env_step,
-                )
+                try:
+                    frames = _record_episode(
+                        encoder, predictor, goal_buf, replay, device,
+                        manager=manager if not in_observe else None,
+                        seed=7777 + env_step,
+                    )
+                    _wandb.log(
+                        {"eval_video": _wandb.Video(frames, fps=10, format="mp4",
+                                                    caption=f"step={env_step} mode={mode_str} score={score:.1%}")},
+                        step=env_step,
+                    )
+                except Exception as _vid_err:
+                    logger.warning(f"[RUN30] Video logging skipped: {_vid_err}")
 
     envs.close()
     elapsed_total = time.time() - t0
