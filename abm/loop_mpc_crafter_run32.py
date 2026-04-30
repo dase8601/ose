@@ -1,29 +1,30 @@
 """
-abm/loop_mpc_crafter_run31.py — Run 31: Director-lite with longer horizon + intrinsic reward
+abm/loop_mpc_crafter_run32.py — Run 32: Codebook refresh during ACT phase
 
-Run 30 diagnosis: H_MANAGER=50 too short for tier3 prerequisite chains
-(wood→table→pickaxe takes ~150-200 steps). REINFORCE gets near-zero signal
-in most subgoal periods because achievements are rare.
+Run 31 diagnosis: codebook built from random-walk OBSERVE replay has no tier3
+state representations. The agent never reached tier3 during OBSERVE (tier3=0%
+in every OBSERVE eval), so k-means produces 64 clusters none of which map to
+crafting-bench or iron-pickaxe states. Manager can't select a subgoal it's
+never seen — regardless of horizon or intrinsic reward.
 
-Two fixes:
-  1. H_MANAGER 50 → 150: subgoal periods now cover full prerequisite chains
-  2. Cosine progress intrinsic reward: +INTRINSIC_COEF * max(0, Δcos_sim) at
-     every ACT step — dense signal even in zero-achievement periods, teaching
-     the manager which codebook entries the CEM can actually navigate toward.
+Key insight: replay.push() runs unconditionally (including during ACT), so the
+30k replay buffer is continuously updated with goal-directed ACT transitions.
+Rebuilding the codebook every 100k ACT steps picks up newly discovered states
+as the agent explores with H_MANAGER=150 subgoal periods.
 
-Key differences from Run 30:
-  - H_MANAGER = 150  (was 50)
-  - MGR_BATCH = 16   (was 32)
-  - INTRINSIC_COEF = 0.5
-  - prev_cos_sim per-env: reset on new subgoal selection and episode end
-  - Total manager reward = achievement_reward + 0.5 * cosine_progress_sum
+One change from Run 31:
+  - CODEBOOK_REFRESH_INTERVAL = 100_000 ACT steps
+  - Codebook rebuilt at 400k, 500k (100k + 200k ACT steps) using current replay
+  - manager.set_codebook() called in-place — policy weights preserved
 
-Condition:   lewm_crafter_hierarchy_v2
-Loop module: abm.loop_mpc_crafter_run31
+Everything else identical to Run 31.
+
+Condition:   lewm_crafter_hierarchy_v3
+Loop module: abm.loop_mpc_crafter_run32
 RunPod:
   pip install timm crafter scikit-learn wandb moviepy
-  python abm_experiment.py --loop-module abm.loop_mpc_crafter_run31 \\
-    --condition lewm_crafter_hierarchy_v2 --device cuda --env crafter \\
+  python abm_experiment.py --loop-module abm.loop_mpc_crafter_run32 \\
+    --condition lewm_crafter_hierarchy_v3 --device cuda --env crafter \\
     --steps 600000 --n-envs 8
 """
 
@@ -72,14 +73,16 @@ CEM_SAMPLES     = 512
 CEM_ELITES      = 50
 CEM_ITERS       = 10
 TRAIN_WARMUP    = BATCH_SIZE
-# Manager (Run 31)
-N_CODES            = 64     # codebook size
-H_MANAGER          = 150    # primitive steps per subgoal (was 50 — covers full prereq chains)
-MGR_LR             = 3e-4
-MGR_BATCH          = 16     # manager decisions before one REINFORCE update (was 32)
-ENTROPY_COEF       = 0.01   # entropy bonus — prevents collapse to single code
-INTRINSIC_COEF     = 0.5    # weight on cosine progress reward (dense signal)
-VIDEO_LOG_INTERVAL = 50_000
+# Manager (unchanged from Run 31)
+N_CODES                  = 64
+H_MANAGER                = 150
+MGR_LR                   = 3e-4
+MGR_BATCH                = 16
+ENTROPY_COEF             = 0.01
+INTRINSIC_COEF           = 0.5
+VIDEO_LOG_INTERVAL       = 50_000
+# Run 32: codebook refresh
+CODEBOOK_REFRESH_INTERVAL = 100_000   # ACT steps between codebook rebuilds
 
 
 # ── ViT-Tiny encoder ───────────────────────────────────────────────────────────
@@ -168,8 +171,8 @@ class SubgoalManager(nn.Module):
     Policy trained with REINFORCE on Crafter achievement rewards. Ordering
     emerges because only the correct subgoal sequence leads to +1 reward.
 
-    Codebook is loaded from k-means centers built at OBSERVE→ACT transition —
-    it covers the latent space of states the encoder has seen during exploration.
+    Codebook is refreshed every CODEBOOK_REFRESH_INTERVAL ACT steps — picking
+    up newly discovered states as the agent explores goal-directed trajectories.
     """
     def __init__(self, z_dim: int = Z_DIM, n_codes: int = N_CODES):
         super().__init__()
@@ -181,7 +184,7 @@ class SubgoalManager(nn.Module):
         self.register_buffer("codebook", torch.zeros(n_codes, z_dim))
 
     def set_codebook(self, centers: torch.Tensor) -> None:
-        """Load k-means centers into codebook (called once after _build_codebook)."""
+        """Load k-means centers into codebook buffer (in-place, policy weights preserved)."""
         self.codebook.copy_(centers.to(self.codebook.device))
 
     def select(
@@ -214,11 +217,12 @@ def _build_codebook(
     device: str,
     n_codes: int = N_CODES,
     encode_batch: int = 512,
+    tag: str = "",
 ) -> torch.Tensor:
     """
     Encode all replay observations and cluster with MiniBatchKMeans → K centers.
-    Called once at OBSERVE→ACT transition with encoder already frozen+eval.
-    Returns (n_codes, Z_DIM) float32 CPU tensor.
+    Encoder must already be frozen+eval. Returns (n_codes, Z_DIM) float32 CPU tensor.
+    Called at OBSERVE→ACT transition and every CODEBOOK_REFRESH_INTERVAL ACT steps.
     """
     from sklearn.cluster import MiniBatchKMeans
 
@@ -234,11 +238,12 @@ def _build_codebook(
         all_z.append(z)
     all_z_np = np.concatenate(all_z, axis=0)
 
-    logger.info(f"[RUN31] k-means: {len(all_z_np)} replay z → K={n_codes} codes")
+    label = f"[RUN32{tag}]"
+    logger.info(f"{label} k-means: {len(all_z_np)} replay z → K={n_codes} codes")
     km = MiniBatchKMeans(n_clusters=n_codes, random_state=42, n_init=10, batch_size=2048)
     km.fit(all_z_np)
     centers = torch.from_numpy(km.cluster_centers_.astype(np.float32))
-    logger.info(f"[RUN31] Codebook built | inertia={km.inertia_:.2f}")
+    logger.info(f"{label} Codebook built | inertia={km.inertia_:.2f}")
     return centers
 
 
@@ -288,9 +293,9 @@ def _record_episode(
 ) -> np.ndarray:
     """
     Run one eval episode and return frames as (T, C, H, W) uint8 for wandb.Video.
-    Uses manager subgoals if provided, otherwise falls back to goal_buf sampling.
+    Saves and restores training state so OBSERVE training is not silently disabled.
     """
-    was_enc_train = encoder.training
+    was_enc_train  = encoder.training
     was_pred_train = predictor.training
     was_mgr_train  = manager.training if manager is not None else False
     encoder.eval(); predictor.eval()
@@ -311,7 +316,7 @@ def _record_episode(
 
     while not done and steps < EP_MAX_STEPS:
         pix = _extract_pix(obs)
-        frames.append(pix.copy())  # (H, W, 3) uint8
+        frames.append(pix.copy())
 
         with torch.no_grad():
             z_cur = encoder(_pix_to_tensor(pix, device))
@@ -333,15 +338,13 @@ def _record_episode(
         mgr_steps_ep += 1
 
     env.close()
-    # Restore training state so OBSERVE training isn't silently disabled
     if was_enc_train:  encoder.train()
     if was_pred_train: predictor.train()
     if manager is not None and was_mgr_train: manager.train()
-    # (T, H, W, 3) → (T, C, H, W) for wandb.Video
     return np.stack(frames).transpose(0, 3, 1, 2)
 
 
-# ── World model training (OBSERVE phase — unchanged from Run 29) ───────────────
+# ── World model training (OBSERVE phase) ──────────────────────────────────────
 
 def _train_step(
     encoder: nn.Module,
@@ -374,22 +377,21 @@ def _train_step(
 def _manager_update(
     manager: SubgoalManager,
     mgr_opt: torch.optim.Optimizer,
-    decisions: List[Tuple[torch.Tensor, torch.Tensor]],  # (z_cur, code_idx) pairs
+    decisions: List[Tuple[torch.Tensor, torch.Tensor]],
     returns: List[float],
     device: str,
 ) -> float:
     """
     REINFORCE: recomputes log_probs fresh from current policy at update time.
-    Storing (z_cur, code_idx) instead of raw log_prob tensors avoids stale
-    computation graph errors when Adam modifies weights in-place between
-    collection and the backward pass.
+    Storing (z_cur, code_idx) avoids stale computation graph errors from
+    Adam in-place weight modifications between collection and backward pass.
     """
     if not decisions:
         return 0.0
-    z_batch   = torch.cat([z for z, _ in decisions], dim=0).to(device)   # (N, z_dim)
-    idx_batch = torch.cat([c for _, c in decisions], dim=0).to(device)   # (N,) long
-    logits    = manager.policy(z_batch)                                   # fresh forward
-    log_probs = torch.distributions.Categorical(logits=logits).log_prob(idx_batch)  # (N,) with grad
+    z_batch   = torch.cat([z for z, _ in decisions], dim=0).to(device)
+    idx_batch = torch.cat([c for _, c in decisions], dim=0).to(device)
+    logits    = manager.policy(z_batch)
+    log_probs = torch.distributions.Categorical(logits=logits).log_prob(idx_batch)
 
     ret = torch.tensor(returns, dtype=torch.float32, device=device)
     if ret.std() > 1e-6:
@@ -404,7 +406,7 @@ def _manager_update(
 
 # ── Evaluation ─────────────────────────────────────────────────────────────────
 
-def _eval_run30(
+def _eval_crafter(
     encoder: nn.Module,
     predictor: nn.Module,
     goal_buf: GoalPixelBuffer,
@@ -415,11 +417,6 @@ def _eval_run30(
     seed_offset: int = 1000,
     n_eps: int = EVAL_N_EPS,
 ) -> Tuple[float, Dict]:
-    """
-    Eval with frozen encoder+predictor.
-    ACT phase: SubgoalManager selects subgoals, CEM with cosine distance.
-    OBSERVE phase (manager=None): goal_buf/replay sampling, cosine CEM.
-    """
     if replay_size < TRAIN_WARMUP:
         return 0.0, {}
 
@@ -440,13 +437,13 @@ def _eval_run30(
     for ep in range(n_eps):
         env = make_crafter_env(seed=seed_offset + ep)
         obs, _ = env.reset(seed=seed_offset + ep)
-        done, ep_steps, mgr_steps_ep = False, 0, H_MANAGER  # force first subgoal pick
+        done, ep_steps, mgr_steps_ep = False, 0, H_MANAGER
         z_goal: Optional[torch.Tensor] = None
 
         while not done and ep_steps < EP_MAX_STEPS:
             pix = _extract_pix(obs)
             with torch.no_grad():
-                z_cur = encoder(_pix_to_tensor(pix, device))  # (1, Z_DIM)
+                z_cur = encoder(_pix_to_tensor(pix, device))
 
             if mgr_steps_ep >= H_MANAGER or z_goal is None:
                 if manager is not None:
@@ -489,8 +486,8 @@ def _eval_run30(
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
-def run_crafter_run31_loop(
-    condition: str = "lewm_crafter_hierarchy_v2",
+def run_crafter_run32_loop(
+    condition: str = "lewm_crafter_hierarchy_v3",
     device: str = "cuda",
     max_steps: int = 600_000,
     seed: int = 42,
@@ -500,66 +497,58 @@ def run_crafter_run31_loop(
     use_mpc: bool = True,
     use_rl: bool = False,
 ) -> Dict:
-    if condition != "lewm_crafter_hierarchy_v2":
-        raise ValueError(f"loop_mpc_crafter_run30 supports: lewm_crafter_hierarchy_v2 — got: {condition}")
+    if condition != "lewm_crafter_hierarchy_v3":
+        raise ValueError(f"loop_mpc_crafter_run32 supports: lewm_crafter_hierarchy_v3 — got: {condition}")
     if env_type != "crafter":
-        raise ValueError("loop_mpc_crafter_run30 only supports env_type='crafter'.")
+        raise ValueError("loop_mpc_crafter_run32 only supports env_type='crafter'.")
 
     torch.manual_seed(seed); np.random.seed(seed); random.seed(seed)
     _observe_steps = observe_steps if observe_steps is not None else OBSERVE_DEFAULT
 
     logger.info(
-        f"[RUN31] Director-lite Crafter | ViT-Tiny 64×64 | cosine CEM | "
-        f"K={N_CODES} codes H_mgr={H_MANAGER} mgr_batch={MGR_BATCH} | "
+        f"[RUN32] Director-lite Crafter | ViT-Tiny 64×64 | cosine CEM | "
+        f"K={N_CODES} codes H_mgr={H_MANAGER} refresh={CODEBOOK_REFRESH_INTERVAL} | "
         f"device={device} max_steps={max_steps} n_envs={n_envs} observe={_observe_steps}"
     )
     t0 = time.time()
 
-    # ── W&B ──
     if _wandb is not None:
         _wandb.init(
             project="lewm-crafter",
-            name=f"run31-{condition}",
+            name=f"run32-{condition}",
             config={
                 "z_dim": Z_DIM, "n_codes": N_CODES, "h_manager": H_MANAGER,
                 "mgr_lr": MGR_LR, "mgr_batch": MGR_BATCH,
                 "entropy_coef": ENTROPY_COEF, "intrinsic_coef": INTRINSIC_COEF,
                 "sigreg_lambda": SIGREG_LAMBDA, "cem_distance": "cosine",
                 "observe_steps": _observe_steps, "max_steps": max_steps,
-                "n_envs": n_envs,
+                "n_envs": n_envs, "codebook_refresh_interval": CODEBOOK_REFRESH_INTERVAL,
             },
         )
-        logger.info("[RUN31] wandb initialized — live dashboard active")
+        logger.info("[RUN32] wandb initialized — live dashboard active")
 
-    # ── Buffers ──
     replay   = PixelReplayBuffer(REPLAY_CAP)
     goal_buf = GoalPixelBuffer(GOAL_BUF_CAP)
 
-    # ── World model ──
     encoder   = ViTTinyEncoder(img_size=IMG_SIZE, z_dim=Z_DIM).to(device)
     predictor = Predictor(latent_dim=Z_DIM, n_actions=N_ACTIONS, hidden=512).to(device)
     opt = optim.Adam(
         list(encoder.parameters()) + list(predictor.parameters()), lr=PRED_LR
     )
 
-    # Created at OBSERVE→ACT transition
-    manager:  Optional[SubgoalManager]         = None
-    mgr_opt:  Optional[torch.optim.Optimizer]  = None
-    mpc:      Optional[CEMPlanner]             = None
+    manager:  Optional[SubgoalManager]        = None
+    mgr_opt:  Optional[torch.optim.Optimizer] = None
+    mpc:      Optional[CEMPlanner]            = None
 
-    # ── Per-env manager state ──
-    # mgr_decision[i]: (z_cur detached, code_idx detached) for last subgoal pick, or None
     mgr_decision:    List[Optional[Tuple[torch.Tensor, torch.Tensor]]] = [None] * n_envs
     mgr_reward_acc:  np.ndarray = np.zeros(n_envs, dtype=np.float32)
     mgr_steps:       np.ndarray = np.full(n_envs, H_MANAGER, dtype=np.int32)
     active_goal_z:   List[Optional[torch.Tensor]] = [None] * n_envs
-    prev_cos_sim:    np.ndarray = np.zeros(n_envs, dtype=np.float32)   # for intrinsic reward
+    prev_cos_sim:    np.ndarray = np.zeros(n_envs, dtype=np.float32)
 
-    # ── REINFORCE accumulation buffer ──
-    mgr_decisions_buf: List[Tuple[torch.Tensor, torch.Tensor]] = []  # (z_cur, code_idx)
+    mgr_decisions_buf: List[Tuple[torch.Tensor, torch.Tensor]] = []
     mgr_ret_buf:       List[float] = []
 
-    # ── Vectorised envs ──
     envs = make_crafter_vec_env(n_envs, seed=seed, use_async=False)
     obs, _ = envs.reset(seed=list(range(seed, seed + n_envs)))
 
@@ -572,6 +561,7 @@ def run_crafter_run31_loop(
     env_step = act_steps = total_observe_steps = 0
     frozen = False
     best_score = 0.0
+    last_codebook_refresh = 0   # ACT steps at last codebook rebuild
 
     while env_step < max_steps:
         in_observe = env_step < _observe_steps
@@ -594,23 +584,39 @@ def run_crafter_run31_loop(
                 device=device, distance="cosine",
             )
             frozen = True
+            last_codebook_refresh = 0
             logger.info(
-                f"[RUN31] OBSERVE→ACT at step={env_step} | "
+                f"[RUN32] OBSERVE→ACT at step={env_step} | "
                 f"encoder+predictor frozen | K={N_CODES} codes | "
                 f"replay={len(replay)} goal_buf={len(goal_buf)}"
             )
 
+        # ── Codebook refresh (ACT only, every CODEBOOK_REFRESH_INTERVAL steps) ──
+        if (not in_observe and frozen and manager is not None and
+                act_steps - last_codebook_refresh >= CODEBOOK_REFRESH_INTERVAL and
+                act_steps > 0):
+            centers = _build_codebook(
+                encoder, replay, device, n_codes=N_CODES,
+                tag=f" refresh@{act_steps}",
+            )
+            manager.set_codebook(centers)   # policy weights unchanged
+            last_codebook_refresh = act_steps
+            logger.info(
+                f"[RUN32] Codebook refreshed at act_step={act_steps} | "
+                f"replay={len(replay)} (includes {act_steps} ACT transitions)"
+            )
+
         # ── Current pixel obs ──
-        pix_cur_np = _extract_pix(obs)  # (n_envs, 64, 64, 3) uint8
+        pix_cur_np = _extract_pix(obs)
 
         # ── Actions ──
         if in_observe:
             actions = envs.action_space.sample()
         else:
             with torch.no_grad():
-                z_cur_t = encoder(_pix_batch_to_tensor(pix_cur_np, device))  # (n_envs, Z_DIM)
+                z_cur_t = encoder(_pix_batch_to_tensor(pix_cur_np, device))
 
-            # Cosine progress intrinsic reward — dense signal for manager
+            # Cosine progress intrinsic reward
             for i in range(n_envs):
                 if active_goal_z[i] is not None:
                     cos_i = float(F.cosine_similarity(
@@ -620,24 +626,23 @@ def run_crafter_run31_loop(
                     mgr_reward_acc[i] += INTRINSIC_COEF * progress
                     prev_cos_sim[i] = cos_i
 
-            # Manager subgoal selection — store (z_cur, code_idx) for recompute at update
+            # Manager subgoal selection
             for i in range(n_envs):
                 if active_goal_z[i] is None or mgr_steps[i] >= H_MANAGER:
-                    # Flush completed subgoal experience
                     if mgr_decision[i] is not None:
                         mgr_decisions_buf.append(mgr_decision[i])
                         mgr_ret_buf.append(float(mgr_reward_acc[i]))
 
-                    z_i = z_cur_t[i:i+1]   # (1, Z_DIM), already no_grad from encoder
+                    z_i = z_cur_t[i:i+1]
                     with torch.no_grad():
                         z_g, code_idx, _ = manager.select(z_i)
                     active_goal_z[i]  = z_g.detach()
                     mgr_decision[i]   = (z_i.detach().cpu(), code_idx.detach().cpu())
                     mgr_reward_acc[i] = 0.0
-                    prev_cos_sim[i]   = 0.0   # reset baseline for new subgoal
+                    prev_cos_sim[i]   = 0.0
                     mgr_steps[i]      = 0
 
-            # CEM planning (batch over envs with valid goals)
+            # CEM planning
             valid = [i for i in range(n_envs) if active_goal_z[i] is not None]
             actions = np.random.randint(N_ACTIONS, size=n_envs)
             if valid and mpc is not None:
@@ -669,7 +674,6 @@ def run_crafter_run31_loop(
                 mgr_steps[i] += 1
 
                 if dones[i]:
-                    # Flush on episode end
                     if mgr_decision[i] is not None:
                         mgr_decisions_buf.append(mgr_decision[i])
                         mgr_ret_buf.append(float(mgr_reward_acc[i]))
@@ -677,7 +681,7 @@ def run_crafter_run31_loop(
                     mgr_decision[i]   = None
                     mgr_reward_acc[i] = 0.0
                     prev_cos_sim[i]   = 0.0
-                    mgr_steps[i]      = H_MANAGER  # force subgoal pick at next step
+                    mgr_steps[i]      = H_MANAGER
 
         obs = obs_next
 
@@ -700,7 +704,7 @@ def run_crafter_run31_loop(
         if (env_step // n_envs) % 2000 == 0 and env_step > 0:
             mode_str = "OBSERVE" if in_observe else "ACT"
             logger.info(
-                f"[RUN31] step={env_step:7d} | {mode_str:7s} | "
+                f"[RUN32] step={env_step:7d} | {mode_str:7s} | "
                 f"replay={len(replay)} goal_buf={len(goal_buf)} | "
                 f"pred={pred_ewa or 0.0:.4f} sig={sigreg_ewa or 0.0:.4f} "
                 f"mgr={mgr_loss_ewa or 0.0:.4f} | {time.time()-t0:.0f}s"
@@ -709,7 +713,7 @@ def run_crafter_run31_loop(
         # ── Eval ──
         if env_step % EVAL_INTERVAL < n_envs:
             mode_str = "OBSERVE" if in_observe else "ACT"
-            score, per_tier = _eval_run30(
+            score, per_tier = _eval_crafter(
                 encoder, predictor, goal_buf, replay, device,
                 manager=manager if not in_observe else None,
                 replay_size=len(replay),
@@ -719,7 +723,7 @@ def run_crafter_run31_loop(
             elapsed = time.time() - t0
             tier_str = " ".join(f"{k.replace('tier','t')}={v:.0%}" for k, v in per_tier.items())
             logger.info(
-                f"[RUN31] step={env_step:7d} | mode={mode_str:7s} | "
+                f"[RUN32] step={env_step:7d} | mode={mode_str:7s} | "
                 f"score={score:.1%} | {tier_str} | "
                 f"pred={pred_ewa or 0.0:.4f} sig={sigreg_ewa or 0.0:.4f} "
                 f"mgr={mgr_loss_ewa or 0.0:.4f} | {elapsed:.0f}s"
@@ -734,9 +738,8 @@ def run_crafter_run31_loop(
             metrics["wall_time_s"].append(elapsed)
             if score > best_score:
                 best_score = score
-                logger.info(f"[RUN31] *** new best score={score:.1%} at step {env_step} ***")
+                logger.info(f"[RUN32] *** new best score={score:.1%} at step {env_step} ***")
 
-            # ── W&B scalar logging ──
             if _wandb is not None:
                 wb_payload: Dict = {
                     "crafter_score":   score,
@@ -746,11 +749,12 @@ def run_crafter_run31_loop(
                     "replay_size":     len(replay),
                     "goal_buf_size":   len(goal_buf),
                     "mode":            0 if in_observe else 1,
+                    "act_steps":       act_steps,
+                    "last_refresh":    last_codebook_refresh,
                 }
                 wb_payload.update({f"tier/{k}": v for k, v in per_tier.items()})
                 _wandb.log(wb_payload, step=env_step)
 
-            # ── W&B video logging (every VIDEO_LOG_INTERVAL steps) ──
             if _wandb is not None and env_step % VIDEO_LOG_INTERVAL < n_envs:
                 try:
                     frames = _record_episode(
@@ -764,7 +768,7 @@ def run_crafter_run31_loop(
                         step=env_step,
                     )
                 except Exception as _vid_err:
-                    logger.warning(f"[RUN31] Video logging skipped: {_vid_err}")
+                    logger.warning(f"[RUN32] Video logging skipped: {_vid_err}")
 
     envs.close()
     elapsed_total = time.time() - t0
@@ -780,7 +784,7 @@ def run_crafter_run31_loop(
         },
         ckpt_dir / f"checkpoint_{condition}.pt",
     )
-    logger.info(f"[RUN31] Done | best_score={best_score:.1%} | total_time={elapsed_total:.0f}s")
+    logger.info(f"[RUN32] Done | best_score={best_score:.1%} | total_time={elapsed_total:.0f}s")
     if _wandb is not None:
         _wandb.finish()
 
@@ -804,4 +808,4 @@ def run_crafter_run31_loop(
     }
 
 
-run_abm_loop = run_crafter_run31_loop
+run_abm_loop = run_crafter_run32_loop

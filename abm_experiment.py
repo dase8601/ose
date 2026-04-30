@@ -473,7 +473,8 @@ def main():
                                  "lewm_doorkey_pixels",
                                  "lewm_crafter_pixels",
                                  "lewm_crafter_hierarchy",
-                                 "lewm_crafter_hierarchy_v2"],
+                                 "lewm_crafter_hierarchy_v2",
+                                 "lewm_crafter_hierarchy_v3"],
                         help="Single condition to run")
     parser.add_argument("--all",    action="store_true",
                         help="Run all conditions (Paper 3: autonomous+fixed+mpc_only+random for miniworld)")
@@ -570,7 +571,8 @@ def main():
     logger.info("="*60)
     for cond, data in all_results.items():
         s80  = data.get("steps_to_80pct")
-        peak = max(data["success_rate"]) if data["success_rate"] else 0
+        sr   = data.get("success_rate") or data.get("crafter_score", [])
+        peak = max(sr) if sr else 0
         a_steps = data.get("act_steps", 0)
         o_steps = data.get("observe_steps", 0)
         total_s = a_steps + o_steps

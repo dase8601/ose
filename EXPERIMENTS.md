@@ -1094,11 +1094,12 @@ python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run28 \
 
 **Hypothesis:** The manager's REINFORCE signal propagates backward through subgoal choices. To unlock an iron pickaxe (+1), the manager must have previously selected wood→table→pickaxe subgoals. The policy gradient rewards the correct ordering sequence.
 
-**Results:** _In progress (step ~440k/600k as of 2026-04-29)_
-- ACT scores: 13.6% → 22.7% → 27.3%, oscillating at Run 29 ceiling
-- tier3=0% throughout ACT phase — manager not yet producing tier3
-- mgr_loss diverging negatively (-0.009 → -0.234) — policy collapsing to confident but wrong subgoals
-- Root cause: H_MANAGER=50 too short for tier3 chains; REINFORCE reward near-zero in most periods
+**Results:** _Complete (600k steps, 2026-04-29)_
+- ACT scores: 13.6% → 22.7% → 27.3%, oscillating at Run 29 ceiling through entire ACT phase
+- tier3=0% throughout ACT — manager never produced any crafted tools
+- mgr_loss diverged negatively (-0.009 → -0.234) throughout ACT — policy collapsed to confident but wrong subgoals
+- Best score: 36.4% (wandb best_score); final eval 27.3% — oscillation, no stable improvement
+- Root cause: H_MANAGER=50 too short for prerequisite chains (~150-200 primitive steps each); REINFORCE near-zero reward in most subgoal periods gives manager no gradient signal for ordering
 
 ---
 
@@ -1122,6 +1123,28 @@ python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run28 \
 - ACT: tier3 > 0% — any crafted advanced tool means hierarchy + intrinsic reward enabled prerequisite learning
 - ACT: mgr_loss stable (not diverging negatively) — intrinsic reward prevents policy collapse
 - ACT: score > 27.3% (Run 30 ceiling)
+
+**Results:** _Complete (600k steps, 2026-04-30)_
+- best_score=27.3% (same ceiling as Run 29/30 — no improvement)
+- t1=67% t2=20% t3=0% t4=0% throughout ACT
+- mgr_loss much more stable than Run 30: oscillated +0.06 → -0.035 → +0.06 instead of diverging to -0.234
+- Intrinsic reward confirmed working (manager didn't collapse), but tier3 still locked at 0%
+- Root cause confirmed: codebook built from random-walk OBSERVE replay has no tier3 state representations — agent never reached tier3 during OBSERVE, so k-means has no tier3 cluster centers. Manager can't select a subgoal that doesn't exist in the codebook, regardless of horizon or intrinsic reward.
+
+### Run 32 — 2026-04-30 — lewm_crafter_hierarchy_v3
+
+**Why:** Run 31 confirmed the codebook bottleneck: all 64 k-means centers were built from random-walk OBSERVE data, so none represent tier3 states the agent never visited during OBSERVE. Manager can't select a subgoal that doesn't exist in the codebook. The fix is to rebuild the codebook during ACT — replay.push() already runs unconditionally, so by act_step=100k the buffer has goal-directed transitions the agent discovered under H_MANAGER=150 subgoal periods.
+
+**One change from Run 31:**
+- Codebook rebuilt every 100k ACT steps (at ~400k and ~500k total steps) using current replay
+- manager.set_codebook() called in-place — policy weights preserved, only cluster centers update
+
+**Hyperparameters:** identical to Run 31 except `CODEBOOK_REFRESH_INTERVAL = 100_000`
+
+**Success criteria:**
+- After first refresh (act_step=100k): codebook inertia changes meaningfully — new states incorporated
+- ACT: tier3 > 0% after second refresh (act_step=200k) — manager can now select tier3-adjacent subgoals
+- ACT: score > 27.3% (Run 31 ceiling)
 
 **Results:** _Pending_
 
@@ -1173,6 +1196,9 @@ _Not started._
 | 2026-04-28 | DoorKey R27 | symbolic_exact_goal_s2 | DoorKey | 200k | 20%* | 0% | Bug fixed but 5-dim symbolic ceiling confirmed; goal 200→204 over 100k ACT steps; *peak during OBSERVE only |
 | 2026-04-29 | DoorKey R28 | lewm_doorkey_pixels | DoorKey | — | — | — | PENDING — ViT-Tiny + SIGReg + L2 CEM; validates LeWM pixel architecture before Crafter |
 | 2026-04-29 | Crafter R29 | lewm_crafter_pixels | Crafter | 600k | 31.8% | 22.7% | t1=67% t2=40% t3=0% t4=0% ceiling; SIGReg stable (sig=0.21); tier3/4 locked — flat CEM can't plan prerequisites |
+| 2026-04-29 | Crafter R30 | lewm_crafter_hierarchy | Crafter | 600k | **36.4%** | 27.3% | H_MANAGER=50 too short; mgr_loss −0.044; tier3=0% — oscillates, no stable gain over R29 |
+| 2026-04-30 | Crafter R31 | lewm_crafter_hierarchy_v2 | Crafter | 600k | 27.3% | 22.7% | H=150+intrinsic: mgr stable (−0.018), but codebook blind to tier3 — no tier3 states in OBSERVE replay |
+| 2026-04-30 | Crafter R32 | lewm_crafter_hierarchy_v3 | Crafter | 600k | — | — | Codebook refresh every 100k ACT steps — picks up goal-directed transitions; pending |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
