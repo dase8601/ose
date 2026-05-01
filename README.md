@@ -1,338 +1,192 @@
-# V-JEPA 2.1 Proof-of-Concept: Grasp Success Prediction
+# Geometric World Models for Reinforcement-Free Planning
 
-**Goal:** Validate that Meta's frozen V-JEPA 2.1 video foundation model captures manipulation-relevant world representations without task-specific training.
+A systematic study of self-supervised world models for planning without reinforcement learning.
 
-**Timeline:** 2 weeks on M3 Pro (18GB shared memory, MPS backend)
+Online ViT-Tiny encoder trained with SIGReg regularization, a Transformer predictor for one-step latent dynamics, and a CEM planner that minimizes cosine distance to goal embeddings. No reward signals, no expert demonstrations, no policy gradient at any stage.
+
+**Results:** 50% on MiniGrid-DoorKey (vs. 42% PPO baseline), 27% arithmetic achievement rate on Crafter with zero RL.
+
+---
+
+## How It Works
+
+The core idea: replace reward-shaping with geometry. SIGReg enforces near-Gaussian marginals on random projections of the encoder output, spreading embeddings across the hypersphere so cosine distance becomes a valid planning cost. CEM then optimizes action sequences by minimizing cosine distance from the predicted future latent to a goal embedding sampled from a goal buffer.
+
+Training runs in two phases. During **OBSERVE** (300k steps), the encoder and predictor train on random-walk experience. During **ACT** (300k steps), both are frozen and the CEM planner uses the converged world model. Freezing at the transition is critical: continuing to train during ACT degrades predictor quality under goal-directed distribution shift.
+
+```
+Observation (pixels)
+    → ViT-Tiny encoder + SIGReg → z_t (256-dim)
+    → Transformer predictor      → z_{t+H} (predicted future)
+    → CEM planner                → argmin cosine_distance(z_{t+H}, z_goal)
+    → action sequence
+```
+
+---
+
+## Results
+
+### MiniGrid-DoorKey
+
+| System | Success Rate |
+|--------|-------------|
+| PPO baseline | 42% |
+| SIGReg + CEM (ours) | **50%** |
+
+Uses symbolic state with BFS fallback for the final navigation stage. Pure pixel CEM was architecturally validated but the headline number uses the hybrid approach.
+
+### Crafter — Flat CEM Baseline
+
+| Tier | Score |
+|------|-------|
+| 1 — basic survival | 67% |
+| 2 — tools | 40% |
+| 3 — advanced crafting | 0% |
+| 4 — rare | 0% |
+| **Overall (arithmetic)** | **27%** |
+
+No RL, no reward shaping, no demonstrations. `pred_ewa=0.037`, `sig_ewa=0.21` (stable representation).
+
+Note on metrics: DreamerV3 reports geometric mean of per-achievement unlock rates across episodes (14.5%). Our 27% is arithmetic fraction of achievements ever unlocked (coverage). These are not comparable metrics, and we do not claim to beat DreamerV3.
+
+### Crafter — Six-Run Hierarchy Ablation
+
+All six runs share identical OBSERVE phases. Only the ACT-phase goal selection and sequencing varies. Tier3 is the diagnostic variable.
+
+| Run | Architecture | Tier3 | Peak |
+|-----|-------------|-------|------|
+| 29 | Flat CEM, random goals | 0% | 27.3% |
+| 30 | REINFORCE manager, H=50 | 0% | 27.3% |
+| 31 | REINFORCE, H=150, intrinsic reward | 0% | 27.3% |
+| 32 | Run 31 + codebook refresh every 100k ACT steps | 0% | 27.3% |
+| 33 | Curiosity: argmax cosine distance to current state | 0% | 22.7% |
+| 34 | Two-level CEM, S=3 subgoal sequences | 0% | 18.2% |
+
+The consistent tier3=0% across five distinct algorithmic approaches points to the representation, not the planning algorithm, as the binding constraint. SIGReg encodes visual similarity; tier3 crafting requires causal prerequisite order.
 
 ---
 
 ## Architecture
 
-```
-INPUT: Egocentric video clips (DROID dataset)
-   ↓
-[FROZEN V-JEPA 2.1 ViT-B Backbone] ← Pre-trained on large video corpus
-   └─ Extracts dense spatio-temporal features: (B, T, 196, 384)
-   └─ No gradient updates (backbone locked)
-   ↓
-[Lightweight Task Head] ← ONLY this trains (~100k params)
-   ├─ Temporal pooling (mean across frames)
-   ├─ Spatial pooling (mean across patches)
-   ├─ MLP: 384 → 512 → 256 → 128 → 1
-   ↓
-OUTPUT: Grasp success probability (binary classification)
-   ↓
-EVALUATION: Zero-shot on held-out DROID clips
-   └─ Compare against DINO, ImageNet ViT-B baselines
-   └─ Measure: Accuracy, F1, AUC-ROC
-```
+### Encoder
 
-### Key Design Decisions
+ViT-Tiny (`vit_tiny_patch16_224`, `pretrained=False`), image size 64x64 for Crafter / 48x48 for DoorKey. Outputs 192-dim tokens projected to 256-dim via linear layer. Trained from scratch online with no pretrained weights.
 
-**Why frozen backbone?**
-- V-JEPA 2.1 trained on 1M+ hours of uncurated video → already rich representations
-- Full fine-tuning requires A100s (HPC only)
-- Frozen backbone + lightweight probe validates that **world model is useful** without expensive compute
-- Faster iteration on M3 (hours vs. days)
-
-**Why lightweight head?**
-- Minimal trainable parameters prevents overfitting on small dataset
-- Clear attribution: if results are good, it's because V-JEPA captures world dynamics, not because we fit a huge model
-- Fast to train (< 1 hour per epoch)
-
-**Why grasp success prediction?**
-- Clear binary task with ground truth labels
-- Directly relevant to robotics (publishable at ICRA/RSS)
-- Tests whether model understands hand-object interaction
-- Generalizable to other manipulation tasks (insert, rotate, etc.)
-
----
-
-## Setup
-
-### Requirements
-
-- **Python:** 3.10+
-- **PyTorch:** 2.0+
-- **M3 Pro:** 18GB+ shared memory (what you have)
-
-### Installation
-
-```bash
-# Clone repo
-git clone <repo_url>
-cd vjepa_poc
-
-# Create virtual environment
-python3 -m venv env
-source env/bin/activate  # macOS/Linux
-
-# Install dependencies
-pip install -r requirements.txt
-```
-
-### Requirements File
-
-```
-torch==2.1.0
-torchvision==0.16.0
-timm==0.9.7
-numpy==1.24.3
-scikit-learn==1.3.0
-matplotlib==3.7.2
-seaborn==0.12.2
-pyyaml==6.0
-tensorboard==2.13.0
-tqdm==4.66.1
-requests==2.31.0
-Pillow==10.0.0
-```
-
----
-
-## Quick Start
-
-### 1. Download Data (First Run Only)
-
-```bash
-python main.py --config config.yaml --device mps
-```
-
-This will:
-- Download/generate DROID dataset (~2-3 hours for 100 episodes)
-- Create train/val/test splits
-- Start training
-
-**Note:** For faster testing, edit `config.yaml` and set:
-```yaml
-dataset:
-  subset_size: 20  # Use only 20 episodes for PoC
-```
-
-### 2. Monitor Training
-
-In another terminal:
-```bash
-tensorboard --logdir ./logs/tensorboard
-```
-
-Then open http://localhost:6006 in your browser.
-
-### 3. Inspect Results
-
-After training completes, see:
-- `./results/report.html` — Visual report with plots
-- `./results/results.json` — Metrics in JSON format
-- `./logs/metrics.json` — Training history
-- `./logs/checkpoints/` — Model checkpoints
-
----
-
-## Configuration
-
-Edit `config.yaml` to modify:
-
-```yaml
-# Dataset
-dataset:
-  subset_size: 100        # Use N episodes (start with 20 for quick test)
-  train_split: 0.6        # 60% train, 20% val, 20% test
-  frame_sample_rate: 2    # Use every 2nd frame (reduce memory)
-  max_seq_length: 50      # Max frames per video
-
-# Training
-training:
-  batch_size: 8           # Reduce if OOM (try 4)
-  num_epochs: 20
-  learning_rate: 1e-3
-  scheduler: "cosine"     # Learning rate schedule
-
-# Hardware
-hardware:
-  max_memory_gb: 18       # Your M3 Pro limit
-  num_workers: 0          # No multiprocessing on macOS
-```
-
----
-
-## What to Expect
-
-### Training Timeline (100 episodes)
-
-- **Data loading:** ~1 hour (first run only, cached after)
-- **Per epoch:** ~5-10 minutes
-- **Total:** ~2-3 hours for 20 epochs
-- **Best result:** ~75-80% zero-shot accuracy
-
-### Output Files
-
-```
-./results/
-├── report.html                  # Visual summary
-├── results.json                 # Metrics
-├── feature_space_pca.png        # 2D feature visualization
-├── confusion_matrix.png
-├── roc_curve.png
-└── precision_recall.png
-
-./logs/
-├── metrics.json                 # Training metrics
-├── tensorboard/                 # TensorBoard logs
-└── checkpoints/
-    ├── model_best_19.pt        # Best validation checkpoint
-    └── model_best_19.pt
-
-```
-
----
-
-## Expected Results (Baseline Numbers)
-
-| Model | Accuracy | F1 | AUC |
-|-------|----------|-----|-----|
-| **V-JEPA 2.1 (Frozen)** | ~78% | 0.75 | 0.84 |
-| DINO ViT-B (Frozen) | ~71% | 0.68 | 0.77 |
-| ImageNet ViT-B (Frozen) | ~65% | 0.61 | 0.70 |
-| Random | 50% | 0.33 | 0.50 |
-
-**Interpretation:** V-JEPA 2.1's temporal understanding (video dynamics) helps it predict grasp outcomes better than static image models.
-
----
-
-## Troubleshooting
-
-### Out of Memory (OOM)
+### SIGReg Regularizer
 
 ```python
-# In config.yaml, try:
-training:
-  batch_size: 4           # Reduce batch size
-  
-dataset:
-  frame_sample_rate: 4    # Use every 4th frame instead of 2
-  max_seq_length: 30      # Reduce max sequence length
+L_sigreg(z) = (1/M) * sum_m W1(r_m.T @ z, N(0,1))   # M=512 random projections
 ```
 
-### Model Download Fails
+Wasserstein-1 distance between random projections and a standard Gaussian. Enforces hyperspherical spreading so cosine distance is metrically meaningful.
 
-If V-JEPA checkpoint download times out:
+### Transformer Predictor
 
-```bash
-# Manual download
-curl -o checkpoints/vjepa_base_0_2.pt https://dl.fbaipublicfiles.com/vjepa2/vjepa_base_0_2.pt
+4 attention heads, 512-dim MLP. Predicts `z_{t+1}` from `(z_t, a_t)`. Training loss:
 
-# Then rerun
-python main.py --config config.yaml --device mps
+```
+L = MSE(z_pred, z_next) + 0.05 * L_sigreg(z_t)
 ```
 
-### MPS Device Issues
+### CEM Planner
 
-If you get MPS warnings, fall back to CPU:
-
-```bash
-python main.py --config config.yaml --device cpu
+```
+a* = argmin_{a_{1:H}} 1 - cos(z_{t+H}, z_goal)
 ```
 
-(Slower, but will work)
+K=512 samples, 50 elites, 10 iterations, H=5. Goal embedding drawn 70% from achievement-positive observations, 30% from replay buffer.
 
 ---
 
-## Next Steps (After PoC Validation)
+## Running Experiments
 
-Once you validate this works on M3:
-
-### 1. Scale to Alpine (A100 GPUs)
+### Setup
 
 ```bash
-# Request HPC allocation
-# Once approved:
-
-# Create SLURM job script (examples in ./hpc/)
-sbatch job_full_finetune.slurm
+git clone https://github.com/dase8601/ose.git
+cd ose
+pip install torch torchvision timm minigrid crafter gymnasium numpy
 ```
 
-### 2. Full Fine-Tuning
+### Run a Crafter experiment
 
-- Unfreeze backbone layers
-- Use all of Ego4D + DROID
-- Larger batch sizes (128+)
-- Longer training (50-100 epochs)
-- Expected: ~85-90% zero-shot accuracy
+```bash
+python abm_experiment.py \
+  --loop-module abm.loop_mpc_crafter_run29 \
+  --condition lewm_crafter_pixels \
+  --device cuda \
+  --env crafter \
+  --steps 600000
+```
 
-### 3. Publication Path
+### Run DoorKey
 
-**Potential venues:**
-- ICRA 2025 (robotics + vision)
-- RSS 2025 (robotics systems)
-- CVPR Workshop (embodied AI)
+```bash
+python abm_experiment.py \
+  --loop-module abm.loop_mpc_doorkey_run28 \
+  --condition lewm_doorkey_pixels \
+  --device cuda \
+  --env doorkey \
+  --steps 300000
+```
 
-**Paper outline:**
-- Motivation: World models for robotics
-- Method: V-JEPA 2.1 on egocentric manipulation
-- Experiments: Zero-shot, few-shot, domain transfer
-- Results: SOTA on DROID grasp tasks
-- Ablations: What does V-JEPA learn?
+### Available conditions
+
+| Condition | Module | Description |
+|-----------|--------|-------------|
+| `lewm_doorkey_pixels` | `abm.loop_mpc_doorkey_run28` | DoorKey pixels, ViT-Tiny + SIGReg |
+| `lewm_crafter_pixels` | `abm.loop_mpc_crafter_run29` | Crafter flat CEM baseline |
+| `lewm_crafter_hierarchy` | `abm.loop_mpc_crafter_run30` | REINFORCE manager H=50 |
+| `lewm_crafter_hierarchy_v2` | `abm.loop_mpc_crafter_run31` | REINFORCE H=150 + intrinsic reward |
+| `lewm_crafter_hierarchy_v3` | `abm.loop_mpc_crafter_run32` | Run 31 + codebook refresh |
+| `lewm_crafter_curiosity` | `abm.loop_mpc_crafter_run33` | Curiosity goal selection |
+| `lewm_crafter_twolevel` | `abm.loop_mpc_crafter_run34` | Two-level CEM |
 
 ---
 
-## Code Organization
+## Code Structure
 
 ```
-vjepa_poc/
-├── config.yaml              # Configuration
-├── main.py                  # Entry point (run this)
-├── data_loader.py          # DROID dataset handling
-├── models.py               # Frozen V-JEPA + task head
-├── train.py                # Training loop
-├── evaluate.py             # Evaluation + visualization
-├── requirements.txt        # Dependencies
-└── README.md               # This file
+abm/
+├── world_model.py              # ViT-Tiny encoder, TransformerPredictor, sigreg()
+├── cem_planner.py              # CEM planner (cosine and L2 distance modes)
+├── loop_mpc_doorkey_run28.py   # DoorKey pixel run
+├── loop_mpc_crafter_run29.py   # Crafter flat CEM baseline
+├── loop_mpc_crafter_run30.py   # REINFORCE manager (H=50)
+├── loop_mpc_crafter_run31.py   # REINFORCE + intrinsic reward
+├── loop_mpc_crafter_run32.py   # Codebook refresh ablation
+├── loop_mpc_crafter_run33.py   # Curiosity goal selection
+└── loop_mpc_crafter_run34.py   # Two-level CEM
 
-checkpoints/
-└── vjepa_base_0_2.pt       # V-JEPA 2.1 weights (auto-downloaded)
-
-logs/
-├── tensorboard/            # TensorBoard logs
-├── metrics.json
-└── checkpoints/            # Model checkpoints
-
-results/
-├── report.html
-├── results.json
-└── *.png                   # Visualizations
+abm_experiment.py               # Experiment runner / dispatcher
+EXPERIMENTS.md                  # Full run log with parameters and results
+paper_draft.md                  # Paper draft
 ```
 
 ---
 
-## Research Questions Validated
+## Why the Ceiling Exists
 
-✅ **Q1:** Does frozen V-JEPA 2.1 capture manipulation-relevant features?
-→ Yes (78% > baselines)
+Tier3 requires approximately 40 sequential steps with exact action dependencies (e.g., collect wood → craft table → collect stone → craft pickaxe). Two failure modes interact.
 
-✅ **Q2:** Can we fine-tune lightweight probes on top?
-→ Yes (fast, memory-efficient)
+**Latent proximity is not task proximity.** A crafting bench state and a forest state may be close in SIGReg space because both are textured green environments. Cosine distance to a tier3 goal does not provide a monotonically decreasing gradient across the full prerequisite chain.
 
-✅ **Q3:** How does it generalize to unseen data?
-→ Measured via test set evaluation
+**Prerequisite chains exceed H=5 CEM horizon.** Eight or more sequential CEM calls must each make incremental progress toward the final goal. This requires a consistent cosine distance gradient through visually ambiguous intermediates, which SIGReg does not provide.
 
-**Next:** Full fine-tuning on Alpine → even better zero-shot transfer?
+The diagnosis: what is needed is not a better planning algorithm (six algorithms confirm this), but a representation that encodes causal temporal distance rather than visual similarity. Successor representations or contrastive temporal objectives trained on goal-reaching trajectories are natural next directions.
+
+---
+
+## Acknowledgments
+
+Experiments and analysis were conducted with assistance from Claude (Anthropic), used throughout for code generation, debugging, and iterative experimental design across 34 runs. All experimental results, architectural decisions, and scientific conclusions are the author's own.
 
 ---
 
 ## References
 
-- **V-JEPA 2.1:** https://arxiv.org/abs/2603.14482
-- **I-JEPA (Original):** https://arxiv.org/abs/2301.03728
-- **DROID Dataset:** https://droid.cs.stanford.edu/
-- **Ego4D:** https://ego4d-data.org/
-
----
-
-## Questions?
-
-- **Architecture:** See `models.py` for detailed comments
-- **Training:** See `train.py` for loss functions, metrics, scheduler
-- **Data:** See `data_loader.py` for dataset structure
-- **Results:** Open `./results/report.html` after training
-
-Good luck! 🚀
+- Dosovitskiy et al. (2021). An image is worth 16x16 words. ICLR 2021.
+- Hafner et al. (2022). Deep hierarchical planning from pixels (Director). NeurIPS 2022.
+- Hafner et al. (2023). Mastering diverse domains with world models (DreamerV3). arXiv 2301.04104.
+- LeCun (2022). A path towards autonomous machine intelligence. OpenReview.
+- Yarats et al. (2025). Learning with world models via latent SIGReg (LeWM). arXiv 2603.19312.

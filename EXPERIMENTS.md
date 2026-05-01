@@ -1155,6 +1155,59 @@ python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run28 \
 
 ---
 
+### Run 33 — 2026-05-01 — lewm_crafter_curiosity
+
+**Why:** REINFORCE is definitively broken for sparse Crafter reward (four runs, zero tier3). Run 33 drops the manager entirely. Goal selection via curiosity: at each H_GOAL=150 step interval, sample 32 candidates from the goal buffer (70%) or replay (30%), encode them, and pick the one most dissimilar (argmin cosine similarity) to the current state. Forces exploration toward unseen regions of latent space without any policy gradient.
+
+**One change from Run 29 (flat CEM):**
+- No SubgoalManager, no REINFORCE, no codebook
+- Goal = most dissimilar replay state to current z_cur, refreshed every H_GOAL=150 steps
+
+**Hyperparameters:**
+| Param | Value |
+|-------|-------|
+| H_GOAL | 150 |
+| N_CANDIDATES | 32 |
+| goal_buf fraction | 0.7 |
+| Everything else | same as Run 29 |
+
+**Results:** _Complete (killed after ACT phase, 2026-05-01)_
+- tier3=0% throughout all of ACT — curiosity goal selection no better than random goal selection
+- Peak score: 22.7% (below Run 29 flat CEM baseline of 27.3%)
+- Early OBSERVE fluke: t3=17%, t4=20% at step 100k appeared once across 10 episodes, never recurred
+- Curiosity exploration hurt rather than helped: maximally dissimilar latent states are not reliably reachable in H=5 CEM steps. Pushing toward the most alien latent coordinates produces unreachable goals, not exploration bonus.
+- Confirms: ceiling is representational, not goal selection strategy
+
+---
+
+### Run 34 — 2026-05-01 — lewm_crafter_twolevel
+
+**Why:** Flat CEM and REINFORCE hierarchy both failed. Run 34 tests whether a two-level CEM (no policy gradient, no REINFORCE anywhere) can find subgoal sequences that guide the agent through prerequisite chains. High-level CEM searches over S=3 codebook subgoal triplets using a chained cosine cost; low-level CEM executes each subgoal for H_LOW=150 primitive steps.
+
+**Architecture (no policy gradient):**
+- High-level CEM: 256 samples, select triplet (k1, k2, k3) from codebook minimizing W1*cos_dist(z_cur, cb[k1]) + W2*cos_dist(cb[k1], cb[k2]) + W3*cos_dist(cb[k2], z_final)
+- Low-level CEM: standard H=5 cosine planner toward current subgoal
+- Codebook refresh every 100k ACT steps (from Run 32)
+
+**Hyperparameters:**
+| Param | Value |
+|-------|-------|
+| H_LOW | 150 |
+| H_HIGH | 450 |
+| SUBGOAL_SEQ_LEN | 3 |
+| N_HIGH_SAMPLES | 256 |
+| W1, W2, W3 | 0.3, 0.3, 0.4 |
+| Everything else | same as Run 29 |
+
+**Results:** _Complete (killed after ACT phase, 2026-05-01)_
+- tier3=0% throughout — worst result of all six runs
+- Peak score: 0-18% in ACT (degraded below flat CEM)
+- Codebook inertia=5669 at second refresh (good coverage, bad results)
+- Two-level CEM triplets built from cosine heuristics do not correspond to executable prerequisite paths. Without a subgoal-level world model trained on subgoal-to-subgoal transitions, the high-level CEM selects visually connected but causally unrelated intermediate states.
+- **Final conclusion across Runs 29-34:** Tier3=0% is invariant to planning architecture. The bottleneck is the representation, not the planner.
+
+---
+
 ## Phase 2 — Prove autonomous System M > fixed switching (Crafter)
 
 _Not started. Begins only after Phase 1 planner proves > 42% on DoorKey._
@@ -1204,6 +1257,8 @@ _Not started._
 | 2026-04-29 | Crafter R30 | lewm_crafter_hierarchy | Crafter | 600k | **36.4%** | 27.3% | H_MANAGER=50 too short; mgr_loss −0.044; tier3=0% — oscillates, no stable gain over R29 |
 | 2026-04-30 | Crafter R31 | lewm_crafter_hierarchy_v2 | Crafter | 600k | 27.3% | 22.7% | H=150+intrinsic: mgr stable (−0.018), but codebook blind to tier3 — no tier3 states in OBSERVE replay |
 | 2026-05-01 | Crafter R32 | lewm_crafter_hierarchy_v3 | Crafter | 544k† | 27.3% | 22.7% | †Killed. Codebook refresh worked (inertia 1059→1943), mgr positive, tier3=0% — REINFORCE confirmed as bottleneck |
+| 2026-05-01 | Crafter R33 | lewm_crafter_curiosity | Crafter | 600k† | 22.7% | 22.7% | Curiosity (argmax cosine dist): below flat baseline; unreachable goals hurt exploration |
+| 2026-05-01 | Crafter R34 | lewm_crafter_twolevel | Crafter | 600k† | 18.2% | 13.6% | Two-level CEM: worst of all six; cosine triplets not causally ordered; tier3=0% |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
