@@ -8,6 +8,14 @@ Online ViT-Tiny encoder trained with SIGReg regularization, a Transformer predic
 
 ---
 
+## Demo
+
+Agent playing Crafter at evaluation step 100k (tier1=67%, tier2=40%, tier3=17%):
+
+<video src="media/crafter_eval_step100k.mp4" controls width="480"></video>
+
+---
+
 ## How It Works
 
 The core idea: replace reward-shaping with geometry. SIGReg enforces near-Gaussian marginals on random projections of the encoder output, spreading embeddings across the hypersphere so cosine distance becomes a valid planning cost. CEM then optimizes action sequences by minimizing cosine distance from the predicted future latent to a goal embedding sampled from a goal buffer.
