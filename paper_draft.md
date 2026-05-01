@@ -2,7 +2,7 @@
 
 **Dallas Sellers**
 University of Colorado Boulder
-hey_Sellers@icloud.com
+dase8601@colorado.edu
 
 ---
 
