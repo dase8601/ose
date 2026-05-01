@@ -474,7 +474,9 @@ def main():
                                  "lewm_crafter_pixels",
                                  "lewm_crafter_hierarchy",
                                  "lewm_crafter_hierarchy_v2",
-                                 "lewm_crafter_hierarchy_v3"],
+                                 "lewm_crafter_hierarchy_v3",
+                                 "lewm_crafter_curiosity",
+                                 "lewm_crafter_twolevel"],
                         help="Single condition to run")
     parser.add_argument("--all",    action="store_true",
                         help="Run all conditions (Paper 3: autonomous+fixed+mpc_only+random for miniworld)")

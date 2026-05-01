@@ -1146,7 +1146,12 @@ python abm_experiment.py --loop-module abm.loop_mpc_doorkey_run28 \
 - ACT: tier3 > 0% after second refresh (act_step=200k) — manager can now select tier3-adjacent subgoals
 - ACT: score > 27.3% (Run 31 ceiling)
 
-**Results:** _Pending_
+**Results:** _Killed at step 544k (2026-05-01) — kill condition met after second codebook refresh_
+- Codebook refresh confirmed working: inertia 1059 → 1662 → 1943 (new states incorporated each refresh) ✓
+- Manager went positive after first refresh: mgr_loss +0.016 → +0.046 (learning something) ✓
+- tier3=0% throughout entire ACT phase — both refreshes failed to unlock any crafted tools
+- Scores oscillating 13.6–27.3%, same ceiling as Runs 29–31
+- **Conclusion: REINFORCE is the fundamental bottleneck.** Four runs of targeted fixes (horizon, intrinsic reward, codebook quality, codebook refresh) all mechanically correct, tier3=0% throughout. Sparse achievement reward cannot drive the manager toward prerequisite ordering for Crafter tier3 regardless of codebook coverage. Must drop REINFORCE entirely for Run 33.
 
 ---
 
@@ -1198,7 +1203,7 @@ _Not started._
 | 2026-04-29 | Crafter R29 | lewm_crafter_pixels | Crafter | 600k | 31.8% | 22.7% | t1=67% t2=40% t3=0% t4=0% ceiling; SIGReg stable (sig=0.21); tier3/4 locked — flat CEM can't plan prerequisites |
 | 2026-04-29 | Crafter R30 | lewm_crafter_hierarchy | Crafter | 600k | **36.4%** | 27.3% | H_MANAGER=50 too short; mgr_loss −0.044; tier3=0% — oscillates, no stable gain over R29 |
 | 2026-04-30 | Crafter R31 | lewm_crafter_hierarchy_v2 | Crafter | 600k | 27.3% | 22.7% | H=150+intrinsic: mgr stable (−0.018), but codebook blind to tier3 — no tier3 states in OBSERVE replay |
-| 2026-04-30 | Crafter R32 | lewm_crafter_hierarchy_v3 | Crafter | 600k | — | — | Codebook refresh every 100k ACT steps — picks up goal-directed transitions; pending |
+| 2026-05-01 | Crafter R32 | lewm_crafter_hierarchy_v3 | Crafter | 544k† | 27.3% | 22.7% | †Killed. Codebook refresh worked (inertia 1059→1943), mgr positive, tier3=0% — REINFORCE confirmed as bottleneck |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
