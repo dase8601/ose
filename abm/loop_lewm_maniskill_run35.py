@@ -1,34 +1,28 @@
 """
-abm/loop_lewm_maniskill_run35.py — Run 35: LeWM + Continuous CEM on ManiSkill3 PickCube-v1
+abm/loop_lewm_maniskill_run35.py — Run 35: LeWM + Continuous CEM on dm_control manipulator
 
 First test of online SIGReg world model + CEM planning on continuous robot manipulation.
+Uses dm_control `manipulator-bring_ball` (pick-and-place analogy) instead of ManiSkill3
+because SAPIEN/Vulkan is unavailable on standard RunPod CUDA pods. dm_control renders
+via EGL (OpenGL) which works on any NVIDIA instance without Vulkan drivers.
 
 Architecture:
   - ViT-Tiny encoder trained online from 64×64 RGB pixels (same as Crafter runs)
-  - MLP Predictor with 6-dim continuous action input (arm_pd_ee_delta_pose)
+  - MLP Predictor with 5-dim continuous action input (manipulator has 5 DOF)
   - ContinuousCEMPlanner: Gaussian CEM over H=8 step sequences
   - SIGReg M=1024, λ=0.1 (LeWM paper values)
   - OBSERVE/ACT freeze protocol (same as Runs 29-34)
 
 Goal buffer strategy:
-  - During OBSERVE: store observations where cube height > 0.05m (lifted) or
-    info['success']=True — these are the states we want to reach
+  - During OBSERVE: store observations where reward > 0.5 (arm near ball/target)
   - 70% goal buffer / 30% replay mix (same as Crafter)
-
-Key difference from Crafter: actions are continuous 6-dim ∈ [-1, 1] rather
-than discrete one-hot. The MLP Predictor treats the 6-dim action as a raw
-float input (n_actions=6).
+  - Success: best episode reward > 0.9 (ball near target)
 
 Condition:   lewm_maniskill_pickcube
 Loop module: abm.loop_lewm_maniskill_run35
 
-Local smoke test (CPU, ~3-5 min):
-  python abm_experiment.py --loop-module abm.loop_lewm_maniskill_run35 \\
-    --condition lewm_maniskill_pickcube --device cpu --env maniskill \\
-    --steps 2000 --n-envs 1
-
 RunPod full run (A100, ~2-3 hrs):
-  pip install mani_skill imageio
+  pip install dm_control imageio
   python abm_experiment.py --loop-module abm.loop_lewm_maniskill_run35 \\
     --condition lewm_maniskill_pickcube --device cuda --env maniskill \\
     --steps 400000 --n-envs 4
@@ -41,7 +35,7 @@ import random
 import time
 from collections import deque
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import numpy as np
 import torch
@@ -61,21 +55,22 @@ REPLAY_CAP      = 50_000
 GOAL_BUF_CAP    = 2_000
 TRAIN_FREQ      = 16
 BATCH_SIZE      = 256
-SIGREG_LAMBDA   = 0.1     # LeWM paper value (vs 0.05 in Crafter runs)
-N_PROJ_SIGREG   = 1024    # LeWM paper value (vs 512 in Crafter runs)
+SIGREG_LAMBDA   = 0.1
+N_PROJ_SIGREG   = 1024
 PRED_LR         = 3e-4
 OBSERVE_DEFAULT = 200_000
-EP_MAX_STEPS    = 200     # PickCube-v1 max episode length
+EP_MAX_STEPS    = 1_000   # dm_control manipulator default episode length
 EVAL_INTERVAL   = 10_000
 EVAL_N_EPS      = 5
 TRAIN_WARMUP    = BATCH_SIZE
-# CEM (LeWM paper values for continuous control)
+# CEM (LeWM paper values)
 CEM_H           = 8
 CEM_K           = 300
 CEM_ELITES      = 30
 CEM_ITERS       = 30
-# Goal buffer thresholds
-CUBE_LIFT_THRESH = 0.05   # meters — cube considered "lifted" above this height
+# Goal buffer thresholds (reward-based — dm_control rewards are in [0, 1])
+REWARD_GOAL_THRESH    = 0.5   # add to goal buf when reward exceeds this
+REWARD_SUCCESS_THRESH = 0.9   # count as episode success when reward exceeds this
 
 
 # ── ViT-Tiny encoder (identical to Crafter runs) ───────────────────────────────
@@ -97,7 +92,7 @@ class ViTTinyEncoder(nn.Module):
 # ── Replay buffer (continuous actions stored as float32) ───────────────────────
 
 class ContinuousReplayBuffer:
-    def __init__(self, capacity: int = REPLAY_CAP, img_size: int = IMG_SIZE, a_dim: int = 6):
+    def __init__(self, capacity: int = REPLAY_CAP, img_size: int = IMG_SIZE, a_dim: int = 5):
         self.capacity  = capacity
         self.a_dim     = a_dim
         self._obs_t    = np.zeros((capacity, img_size, img_size, 3), dtype=np.uint8)
@@ -117,10 +112,11 @@ class ContinuousReplayBuffer:
         idx = np.random.choice(self._size, size=min(n, self._size), replace=False)
         def to_t(arr):
             return torch.from_numpy(arr.astype(np.float32) / 255.0).permute(0, 3, 1, 2).to(device)
-        obs_t    = to_t(self._obs_t[idx])
-        actions  = torch.from_numpy(self._actions[idx]).float().to(device)   # (B, a_dim)
-        obs_next = to_t(self._obs_next[idx])
-        return obs_t, actions, obs_next
+        return (
+            to_t(self._obs_t[idx]),
+            torch.from_numpy(self._actions[idx]).float().to(device),
+            to_t(self._obs_next[idx]),
+        )
 
     def sample_raw(self, n: int) -> Optional[np.ndarray]:
         if self._size == 0:
@@ -161,60 +157,40 @@ def _pix_to_tensor(pix_hwc: np.ndarray, device: str) -> torch.Tensor:
     return torch.from_numpy(pix_hwc.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
 
 
-def _batch_pix_to_tensor(pix_np: np.ndarray, device: str) -> torch.Tensor:
-    """(B, H, W, 3) uint8 → (B, 3, H, W) float tensor on device."""
-    return torch.from_numpy(pix_np.astype(np.float32) / 255.0).permute(0, 3, 1, 2).to(device)
+# ── dm_control environment helpers ────────────────────────────────────────────
 
-
-# ── ManiSkill3 environment helpers ─────────────────────────────────────────────
-
-def _make_env(n_envs: int, seed: int = 42, render_mode: Optional[str] = None):
-    """Create a ManiSkill3 PickCube-v1 environment."""
-    import gymnasium as gym
-    import mani_skill.envs  # noqa: F401 — registers environments
-
-    kwargs = dict(
-        num_envs=n_envs,
-        obs_mode="state_dict+rgb",
-        control_mode="arm_pd_ee_delta_pose",
-        reward_mode="none",   # no reward signal used
-        render_mode=render_mode or "rgb_array",
-        sensor_configs=dict(width=IMG_SIZE, height=IMG_SIZE),
+def _make_single_env(seed: int = 42):
+    """Create a dm_control manipulator-bring_ball env with 64×64 pixel observations."""
+    from dm_control import suite
+    from dm_control.suite.wrappers import pixels as pixel_wrapper
+    env = suite.load(
+        domain_name="manipulator",
+        task_name="bring_ball",
+        task_kwargs={"random": seed},
     )
-    env = gym.make("PickCube-v1", **kwargs)
+    env = pixel_wrapper.Wrapper(
+        env,
+        pixels_only=True,
+        render_kwargs={"width": IMG_SIZE, "height": IMG_SIZE, "camera_id": 0},
+    )
     return env
 
 
-def _extract_rgb(obs: dict) -> np.ndarray:
-    """
-    Extract (n_envs, H, W, 3) uint8 RGB from ManiSkill3 observation dict.
-    Handles both tensor and numpy outputs from the environment.
-    """
-    rgb = obs["sensor_data"]["base_camera"]["rgb"]
-    if isinstance(rgb, torch.Tensor):
-        rgb = rgb.cpu().numpy()
-    return rgb.astype(np.uint8)  # (n_envs, H, W, 3)
+def _get_pixels(timestep) -> np.ndarray:
+    """Extract (H, W, 3) uint8 pixels from a dm_control TimeStep."""
+    return timestep.observation["pixels"].astype(np.uint8)
 
 
-def _extract_cube_height(obs: dict, env_idx: int = 0) -> float:
-    """Extract cube Z-position from state_dict obs."""
-    try:
-        obj_pose = obs["extra"]["obj_pose"]
-        if isinstance(obj_pose, torch.Tensor):
-            obj_pose = obj_pose.cpu().numpy()
-        return float(obj_pose[env_idx, 2])  # Z component
-    except (KeyError, IndexError):
-        return 0.0
+def _get_action_dim(env) -> int:
+    return int(env.action_spec().shape[0])
 
 
-def _extract_success(info: dict) -> np.ndarray:
-    """Extract per-env success flags as boolean array."""
-    success = info.get("success", False)
-    if isinstance(success, torch.Tensor):
-        return success.cpu().numpy().astype(bool)
-    if isinstance(success, np.ndarray):
-        return success.astype(bool)
-    return np.array([bool(success)])
+def _random_action(env, n: int) -> np.ndarray:
+    """Sample n random actions within the env's action bounds."""
+    spec = env.action_spec()
+    return np.random.uniform(
+        spec.minimum, spec.maximum, size=(n, _get_action_dim(env))
+    ).astype(np.float32)
 
 
 # ── World model training step ──────────────────────────────────────────────────
@@ -225,7 +201,6 @@ def _train_step(encoder, predictor, opt, replay: ContinuousReplayBuffer, device:
     obs_t, actions, obs_next = replay.sample(BATCH_SIZE, device)
     z_t    = encoder(obs_t)
     z_next = encoder(obs_next).detach()
-    # actions: (B, a_dim) continuous float — passed directly (no one-hot)
     z_pred    = predictor(z_t, actions)
     pred_loss = F.mse_loss(z_pred, z_next)
     reg_loss  = sigreg(z_t, n_proj=N_PROJ_SIGREG)
@@ -246,7 +221,7 @@ def _sample_goal_z(
     encoder: nn.Module,
     device: str,
 ) -> Optional[torch.Tensor]:
-    """Sample a goal embedding: 70% from goal_buf, 30% from replay."""
+    """70% from goal_buf, 30% from replay."""
     use_goal = len(goal_buf) > 0 and random.random() < 0.7
     raw = goal_buf.sample_raw(1) if use_goal else replay.sample_raw(1)
     if raw is None:
@@ -259,7 +234,7 @@ def _sample_goal_z(
 
 # ── Evaluation with video recording ───────────────────────────────────────────
 
-def _eval_maniskill(
+def _eval_dmcontrol(
     encoder: nn.Module,
     predictor,
     goal_buf: GoalPixelBuffer,
@@ -267,13 +242,11 @@ def _eval_maniskill(
     a_dim: int,
     device: str,
     step: int,
-    seed_offset: int = 1000,
     n_eps: int = EVAL_N_EPS,
     save_video: bool = True,
 ) -> dict:
-    """Run n_eps evaluation episodes and return metrics."""
     if len(replay) < TRAIN_WARMUP:
-        return {"success_rate": 0.0, "lift_rate": 0.0}
+        return {"success_rate": 0.0, "near_rate": 0.0}
 
     encoder.eval()
     predictor.eval()
@@ -283,62 +256,47 @@ def _eval_maniskill(
         n_elites=CEM_ELITES, n_iters=CEM_ITERS, device=device,
     )
 
-    successes = 0
-    lifts     = 0
+    successes   = 0
+    nears       = 0
     video_frames: List[np.ndarray] = []
-    record_ep = 0  # record the first episode
 
     for ep in range(n_eps):
-        env = _make_env(1, seed=seed_offset + ep,
-                        render_mode="rgb_array" if (save_video and ep == record_ep) else None)
-        obs, _ = env.reset(seed=seed_offset + ep)
+        env = _make_single_env(seed=1000 + ep)
+        timestep = env.reset()
         planner.reset()
 
         z_goal = _sample_goal_z(goal_buf, replay, encoder, device)
         if z_goal is None:
             with torch.no_grad():
-                rgb = _extract_rgb(obs)[0]
-                z_goal = encoder(_pix_to_tensor(rgb, device))
+                z_goal = encoder(_pix_to_tensor(_get_pixels(timestep), device))
 
-        ep_success = False
-        ep_lift    = False
+        ep_best_reward = 0.0
+        record = save_video and ep == 0
 
-        for step_i in range(EP_MAX_STEPS):
-            rgb = _extract_rgb(obs)[0]  # (H, W, 3)
-
-            if save_video and ep == record_ep:
-                frame = env.render()
-                if isinstance(frame, torch.Tensor):
-                    frame = frame.cpu().numpy()
-                if frame is not None:
-                    if frame.ndim == 4:
-                        frame = frame[0]
-                    video_frames.append(frame.astype(np.uint8))
+        for _ in range(EP_MAX_STEPS):
+            rgb = _get_pixels(timestep)
+            if record:
+                video_frames.append(rgb.copy())
 
             with torch.no_grad():
                 z_cur = encoder(_pix_to_tensor(rgb, device))
 
-            action = planner.plan(z_cur, z_goal)  # (a_dim,)
-            obs, _, terminated, truncated, info = env.step(action[None])  # add batch dim
+            action = planner.plan(z_cur, z_goal)
+            timestep = env.step(action)
 
-            success_arr = _extract_success(info)
-            if success_arr[0]:
-                ep_success = True
+            r = timestep.reward or 0.0
+            if r > ep_best_reward:
+                ep_best_reward = r
 
-            cube_h = _extract_cube_height(obs, env_idx=0)
-            if cube_h > CUBE_LIFT_THRESH:
-                ep_lift = True
-
-            if terminated[0] if hasattr(terminated, '__getitem__') else terminated:
+            if timestep.last():
                 break
 
         env.close()
-        if ep_success:
+        if ep_best_reward > REWARD_SUCCESS_THRESH:
             successes += 1
-        if ep_lift:
-            lifts += 1
+        if ep_best_reward > REWARD_GOAL_THRESH:
+            nears += 1
 
-    # Save video
     if save_video and video_frames:
         try:
             import imageio
@@ -355,7 +313,7 @@ def _eval_maniskill(
 
     return {
         "success_rate": successes / n_eps,
-        "lift_rate":    lifts     / n_eps,
+        "near_rate":    nears     / n_eps,
     }
 
 
@@ -381,39 +339,37 @@ def run_abm_loop(
     logger.info(f"[RUN35] condition={condition} device={device} "
                 f"observe={observe_steps} total={max_steps} n_envs={n_envs}")
 
-    # ── Environment ─────────────────────────────────────────────────────────────
-    env = _make_env(n_envs, seed=seed)
-    obs, _ = env.reset(seed=seed)
+    # ── Environments (list of n_envs independent dm_control instances) ─────────
+    envs      = [_make_single_env(seed=seed + i) for i in range(n_envs)]
+    timesteps = [env.reset() for env in envs]
 
-    a_dim = int(env.action_space.shape[-1])
-    logger.info(f"[RUN35] Action dim: {a_dim}  Obs keys: {list(obs.keys())}")
+    a_dim = _get_action_dim(envs[0])
+    logger.info(f"[RUN35] dm_control manipulator-bring_ball | a_dim={a_dim}")
 
     # ── Model ───────────────────────────────────────────────────────────────────
-    encoder  = ViTTinyEncoder(img_size=IMG_SIZE, z_dim=Z_DIM).to(device)
-    # Predictor with n_actions=a_dim — continuous action passed directly as float
+    encoder   = ViTTinyEncoder(img_size=IMG_SIZE, z_dim=Z_DIM).to(device)
     predictor = Predictor(latent_dim=Z_DIM, n_actions=a_dim, hidden=512).to(device)
-
-    params = list(encoder.parameters()) + list(predictor.parameters())
-    opt = optim.Adam(params, lr=PRED_LR)
+    params    = list(encoder.parameters()) + list(predictor.parameters())
+    opt       = optim.Adam(params, lr=PRED_LR)
 
     replay   = ContinuousReplayBuffer(capacity=REPLAY_CAP, img_size=IMG_SIZE, a_dim=a_dim)
     goal_buf = GoalPixelBuffer(capacity=GOAL_BUF_CAP)
 
     # ── Metrics ─────────────────────────────────────────────────────────────────
     results: Dict = {
-        "condition":        condition,
-        "env_type":         "maniskill",
-        "env_steps":        [],
-        "success_rate":     [],
-        "lift_rate":        [],
-        "pred_loss_ewa":    [],
-        "sigreg_loss_ewa":  [],
-        "mode":             [],
-        "wall_time_s":      [],
-        "best_success":     0.0,
-        "total_time_s":     0.0,
-        "act_steps":        0,
-        "observe_steps":    observe_steps,
+        "condition":       condition,
+        "env_type":        "dmcontrol_manipulator",
+        "env_steps":       [],
+        "success_rate":    [],
+        "near_rate":       [],
+        "pred_loss_ewa":   [],
+        "sigreg_loss_ewa": [],
+        "mode":            [],
+        "wall_time_s":     [],
+        "best_success":    0.0,
+        "total_time_s":    0.0,
+        "act_steps":       0,
+        "observe_steps":   observe_steps,
     }
 
     pred_ewa  = 0.0
@@ -421,15 +377,12 @@ def run_abm_loop(
     ewa_alpha = 0.01
     t_start   = time.time()
     phase     = "OBSERVE"
-
-    # CEM planner (created after OBSERVE freeze)
     planner: Optional[ContinuousCEMPlanner] = None
 
-    global_step = 0
+    global_step  = 0
     train_ticker = 0
 
-    # ── Collect first obs ───────────────────────────────────────────────────────
-    rgb_batch = _extract_rgb(obs)  # (n_envs, H, W, 3)
+    rgb_batch = np.stack([_get_pixels(ts) for ts in timesteps])  # (n_envs, H, W, 3)
 
     while global_step < max_steps:
 
@@ -451,39 +404,40 @@ def run_abm_loop(
 
         # ── Action selection ────────────────────────────────────────────────────
         if phase == "OBSERVE" or planner is None:
-            # Random exploration
-            actions_np = env.action_space.sample()  # (n_envs, a_dim) or (a_dim,)
-            if actions_np.ndim == 1:
-                actions_np = actions_np[None].repeat(n_envs, axis=0)
+            actions_np = _random_action(envs[0], n_envs)
         else:
-            # CEM planning per environment
-            actions_np = np.zeros((n_envs, a_dim), dtype=np.float32)
             z_goal = _sample_goal_z(goal_buf, replay, encoder, device)
             if z_goal is None:
-                actions_np = env.action_space.sample()
-                if actions_np.ndim == 1:
-                    actions_np = actions_np[None].repeat(n_envs, axis=0)
+                actions_np = _random_action(envs[0], n_envs)
             else:
+                actions_np = np.zeros((n_envs, a_dim), dtype=np.float32)
                 for i in range(n_envs):
                     with torch.no_grad():
                         z_cur = encoder(_pix_to_tensor(rgb_batch[i], device))
                     actions_np[i] = planner.plan(z_cur, z_goal)
 
-        # ── Environment step ────────────────────────────────────────────────────
-        next_obs, _, terminated, truncated, info = env.step(actions_np)
-        next_rgb = _extract_rgb(next_obs)  # (n_envs, H, W, 3)
-
-        # ── Store transitions ───────────────────────────────────────────────────
-        success_arr = _extract_success(info)
+        # ── Environment step (sequential over n_envs) ───────────────────────────
+        next_rgb = np.zeros_like(rgb_batch)
         for i in range(n_envs):
-            replay.push(rgb_batch[i], actions_np[i], next_rgb[i])
+            ts = envs[i].step(actions_np[i])
+            r  = ts.reward or 0.0
 
-            # Goal buffer: cube lifted or task succeeded
-            cube_h = _extract_cube_height(next_obs, env_idx=i)
-            if cube_h > CUBE_LIFT_THRESH or (i < len(success_arr) and success_arr[i]):
-                goal_buf.add(next_rgb[i])
+            pix_next = _get_pixels(ts)
+            next_rgb[i] = pix_next
 
-        global_step += n_envs
+            replay.push(rgb_batch[i], actions_np[i], pix_next)
+            if r > REWARD_GOAL_THRESH:
+                goal_buf.add(pix_next)
+
+            if ts.last():
+                ts = envs[i].reset()
+                next_rgb[i] = _get_pixels(ts)
+                if planner is not None:
+                    planner.reset()
+
+            timesteps[i] = ts
+
+        global_step  += n_envs
         train_ticker += n_envs
 
         # ── Training (OBSERVE only) ─────────────────────────────────────────────
@@ -494,26 +448,18 @@ def run_abm_loop(
                 pred_ewa = (1 - ewa_alpha) * pred_ewa + ewa_alpha * pl
                 sig_ewa  = (1 - ewa_alpha) * sig_ewa  + ewa_alpha * rl
 
-        # ── Handle episode resets ───────────────────────────────────────────────
-        done_any = terminated if isinstance(terminated, bool) else terminated.any()
-        if done_any:
-            if planner is not None:
-                planner.reset()
-            obs, _ = env.reset()
-            next_rgb = _extract_rgb(obs)
-
         rgb_batch = next_rgb
 
         # ── Evaluation & logging ────────────────────────────────────────────────
         if global_step % EVAL_INTERVAL < n_envs:
-            metrics = _eval_maniskill(
+            metrics = _eval_dmcontrol(
                 encoder, predictor, goal_buf, replay, a_dim, device,
                 step=global_step, save_video=True,
             )
             elapsed = time.time() - t_start
             results["env_steps"].append(global_step)
             results["success_rate"].append(metrics["success_rate"])
-            results["lift_rate"].append(metrics["lift_rate"])
+            results["near_rate"].append(metrics["near_rate"])
             results["pred_loss_ewa"].append(pred_ewa)
             results["sigreg_loss_ewa"].append(sig_ewa)
             results["mode"].append(phase)
@@ -524,13 +470,14 @@ def run_abm_loop(
 
             logger.info(
                 f"[RUN35] step={global_step:>7} | {phase:7} | "
-                f"success={metrics['success_rate']:.1%} lift={metrics['lift_rate']:.1%} | "
+                f"success={metrics['success_rate']:.1%} near={metrics['near_rate']:.1%} | "
                 f"pred_ewa={pred_ewa:.4f} sig_ewa={sig_ewa:.4f} | "
                 f"replay={len(replay)} goal={len(goal_buf)} | "
                 f"t={elapsed:.0f}s"
             )
 
-    env.close()
+    for env in envs:
+        env.close()
     results["total_time_s"] = time.time() - t_start
     results["act_steps"]    = max(0, global_step - observe_steps)
     logger.info(f"[RUN35] Done | best_success={results['best_success']:.1%} "
