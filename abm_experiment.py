@@ -476,14 +476,15 @@ def main():
                                  "lewm_crafter_hierarchy_v2",
                                  "lewm_crafter_hierarchy_v3",
                                  "lewm_crafter_curiosity",
-                                 "lewm_crafter_twolevel"],
+                                 "lewm_crafter_twolevel",
+                                 "lewm_maniskill_pickcube"],
                         help="Single condition to run")
     parser.add_argument("--all",    action="store_true",
                         help="Run all conditions (Paper 3: autonomous+fixed+mpc_only+random for miniworld)")
     parser.add_argument("--device", default="auto",       help="auto | mps | cpu | cuda")
     parser.add_argument("--env",    default="doorkey",
-                        choices=["doorkey", "crafter", "miniworld", "dmcontrol", "habitat"],
-                        help="Environment: doorkey | crafter | miniworld | dmcontrol | habitat")
+                        choices=["doorkey", "crafter", "miniworld", "dmcontrol", "habitat", "maniskill"],
+                        help="Environment: doorkey | crafter | miniworld | dmcontrol | habitat | maniskill")
     parser.add_argument("--steps",  type=int, default=800_000)
     parser.add_argument("--seed",   type=int, default=42)
     parser.add_argument("--n-envs", type=int, default=16)

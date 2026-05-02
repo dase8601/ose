@@ -1,5 +1,20 @@
 # Changelog
 
+## 2026-05-01 — Run 35 built: LeWM + Continuous CEM on ManiSkill3 PickCube-v1
+
+### Why
+Crafter experiments (Runs 29-34) established that SIGReg + CEM fails on visually ambiguous long-chain tasks. ManiSkill3 PickCube-v1 addresses both failure conditions: visually distinct before/after states (cube on table vs cube at goal), short 200-step horizon, and richer signal available. First test of whether geometric planning transfers to continuous robot manipulation.
+
+### What
+- New file: `abm/cem_continuous.py` — ContinuousCEMPlanner: Gaussian CEM over H×a_dim continuous action sequences, with warm-start shift between MPC steps
+- New file: `abm/loop_lewm_maniskill_run35.py` — full OBSERVE/ACT loop for ManiSkill3 PickCube-v1; condition `lewm_maniskill_pickcube`
+- Env: PickCube-v1, obs_mode="state_dict+rgb", control_mode="arm_pd_ee_delta_pose" (6-dim continuous)
+- SIGReg: M=1024, λ=0.1 (LeWM paper values, up from M=512, λ=0.05 in Crafter runs)
+- CEM: K=300, elite=30, iters=30, H=8 (LeWM paper values for continuous control)
+- Goal buffer: observations where cube height > 0.05m or info['success']=True
+- Video recording: eval MP4s saved to media/maniskill_run35_eval_step{N}.mp4
+- `abm_experiment.py`: added `lewm_maniskill_pickcube` to valid conditions; added `maniskill` to env choices
+
 ## 2026-04-29 — Run 31 built: Director-lite with longer horizon + cosine intrinsic reward
 
 ### Why

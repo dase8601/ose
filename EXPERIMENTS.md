@@ -1220,6 +1220,38 @@ _Not started._
 
 ---
 
+### Run 35 — 2026-05-01 — lewm_maniskill_pickcube
+
+**Why:** Six Crafter runs established that SIGReg + CEM fails when states are visually ambiguous over long prerequisite chains. ManiSkill3 PickCube-v1 tests whether the same approach works when both failure conditions are removed: before/after states are visually distinct (cube on table vs cube at goal sphere), horizon is short (~200 steps), and proprioception is available. First extension of the system to continuous robot manipulation.
+
+**Architecture:**
+- ViT-Tiny encoder (64×64 RGB), same as Crafter runs
+- MLP Predictor with 6-dim continuous action input (arm_pd_ee_delta_pose, n_actions=6)
+- ContinuousCEMPlanner: Gaussian N(μ, σ²) sampling over H×a_dim sequences, warm-start shift between MPC steps
+- SIGReg M=1024, λ=0.1 (LeWM paper values, increased from M=512, λ=0.05 in Crafter)
+- Goal buffer: observations where cube height > 0.05m or info['success']=True
+
+**Hyperparameters:**
+
+| Param | Value |
+|-------|-------|
+| z_dim | 256 |
+| batch_size | 256 |
+| replay_capacity | 50k |
+| lambda_sigreg | 0.1 |
+| n_proj | 1024 |
+| CEM H | 8 |
+| CEM K | 300 |
+| CEM elites | 30 |
+| CEM iters | 30 |
+| OBSERVE steps | 200k |
+| ACT steps | 200k |
+| n_envs | 4 |
+
+**Results:** pending
+
+---
+
 ## All results summary
 
 | Date | Run | Condition | Env | Steps | Peak | Final | Notes |
@@ -1259,6 +1291,7 @@ _Not started._
 | 2026-05-01 | Crafter R32 | lewm_crafter_hierarchy_v3 | Crafter | 544k† | 27.3% | 22.7% | †Killed. Codebook refresh worked (inertia 1059→1943), mgr positive, tier3=0% — REINFORCE confirmed as bottleneck |
 | 2026-05-01 | Crafter R33 | lewm_crafter_curiosity | Crafter | 600k† | 22.7% | 22.7% | Curiosity (argmax cosine dist): below flat baseline; unreachable goals hurt exploration |
 | 2026-05-01 | Crafter R34 | lewm_crafter_twolevel | Crafter | 600k† | 18.2% | 13.6% | Two-level CEM: worst of all six; cosine triplets not causally ordered; tier3=0% |
+| 2026-05-01 | ManiSkill R35 | lewm_maniskill_pickcube | ManiSkill3 PickCube-v1 | 400k | pending | pending | First continuous manipulation run; Gaussian CEM H=8 K=300; LeWM params M=1024 λ=0.1 |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
