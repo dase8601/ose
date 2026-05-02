@@ -1,29 +1,33 @@
 """
-abm/loop_lewm_maniskill_run35.py — Run 35: LeWM + Continuous CEM on dm_control manipulator
+abm/loop_lewm_maniskill_run35.py — Run 35: LeWM + Continuous CEM on FetchPickAndPlace-v3
 
 First test of online SIGReg world model + CEM planning on continuous robot manipulation.
-Uses dm_control `manipulator-bring_ball` (pick-and-place analogy) instead of ManiSkill3
-because SAPIEN/Vulkan is unavailable on standard RunPod CUDA pods. dm_control renders
-via EGL (OpenGL) which works on any NVIDIA instance without Vulkan drivers.
+Uses gymnasium[mujoco] FetchPickAndPlace-v3 — MuJoCo 3.x bundles its own libEGL so
+no system OpenGL/Vulkan is needed on headless RunPod CUDA pods.
+
+Rendering history:
+  ManiSkill3 → needs Vulkan (not available on RunPod)
+  dm_control → needs system libOpenGL/libOSMesa (not available on RunPod)
+  gymnasium[mujoco] → uses MuJoCo's bundled libEGL, works headless with MUJOCO_GL=egl
 
 Architecture:
   - ViT-Tiny encoder trained online from 64×64 RGB pixels (same as Crafter runs)
-  - MLP Predictor with 5-dim continuous action input (manipulator has 5 DOF)
+  - MLP Predictor with 4-dim continuous action input (FetchPickAndPlace: dx,dy,dz,dg)
   - ContinuousCEMPlanner: Gaussian CEM over H=8 step sequences
   - SIGReg M=1024, λ=0.1 (LeWM paper values)
   - OBSERVE/ACT freeze protocol (same as Runs 29-34)
 
 Goal buffer strategy:
-  - During OBSERVE: store observations where reward > 0.5 (arm near ball/target)
-  - 70% goal buffer / 30% replay mix (same as Crafter)
-  - Success: best episode reward > 0.9 (ball near target)
+  - reward > -0.1 (dense, near 0 = gripper near goal) → add to goal buffer
+  - info["is_success"] == True → also add to goal buffer
+  - 70% goal buffer / 30% replay mix
 
 Condition:   lewm_maniskill_pickcube
 Loop module: abm.loop_lewm_maniskill_run35
 
-RunPod full run (A100, ~2-3 hrs):
-  pip install dm_control imageio
-  python abm_experiment.py --loop-module abm.loop_lewm_maniskill_run35 \\
+RunPod full run:
+  pip install "gymnasium[mujoco]" gymnasium-robotics imageio
+  MUJOCO_GL=egl python abm_experiment.py --loop-module abm.loop_lewm_maniskill_run35 \\
     --condition lewm_maniskill_pickcube --device cuda --env maniskill \\
     --steps 400000 --n-envs 4
 """
@@ -59,7 +63,7 @@ SIGREG_LAMBDA   = 0.1
 N_PROJ_SIGREG   = 1024
 PRED_LR         = 3e-4
 OBSERVE_DEFAULT = 200_000
-EP_MAX_STEPS    = 1_000   # dm_control manipulator default episode length
+EP_MAX_STEPS    = 50      # FetchPickAndPlace-v3 default episode length
 EVAL_INTERVAL   = 10_000
 EVAL_N_EPS      = 5
 TRAIN_WARMUP    = BATCH_SIZE
@@ -68,9 +72,9 @@ CEM_H           = 8
 CEM_K           = 300
 CEM_ELITES      = 30
 CEM_ITERS       = 30
-# Goal buffer thresholds (reward-based — dm_control rewards are in [0, 1])
-REWARD_GOAL_THRESH    = 0.5   # add to goal buf when reward exceeds this
-REWARD_SUCCESS_THRESH = 0.9   # count as episode success when reward exceeds this
+# Goal buffer thresholds (dense reward in FetchPickAndPlace is distance-based,
+# near 0 = at goal, negative = away; -0.1 is "close enough to store as goal")
+REWARD_GOAL_THRESH = -0.1
 
 
 # ── ViT-Tiny encoder (identical to Crafter runs) ───────────────────────────────
@@ -92,7 +96,7 @@ class ViTTinyEncoder(nn.Module):
 # ── Replay buffer (continuous actions stored as float32) ───────────────────────
 
 class ContinuousReplayBuffer:
-    def __init__(self, capacity: int = REPLAY_CAP, img_size: int = IMG_SIZE, a_dim: int = 5):
+    def __init__(self, capacity: int = REPLAY_CAP, img_size: int = IMG_SIZE, a_dim: int = 4):
         self.capacity  = capacity
         self.a_dim     = a_dim
         self._obs_t    = np.zeros((capacity, img_size, img_size, 3), dtype=np.uint8)
@@ -128,7 +132,7 @@ class ContinuousReplayBuffer:
         return self._size
 
 
-# ── Goal pixel buffer (identical to Crafter runs) ─────────────────────────────
+# ── Goal pixel buffer ──────────────────────────────────────────────────────────
 
 class GoalPixelBuffer:
     def __init__(self, capacity: int = GOAL_BUF_CAP):
@@ -157,40 +161,39 @@ def _pix_to_tensor(pix_hwc: np.ndarray, device: str) -> torch.Tensor:
     return torch.from_numpy(pix_hwc.astype(np.float32) / 255.0).permute(2, 0, 1).unsqueeze(0).to(device)
 
 
-# ── dm_control environment helpers ────────────────────────────────────────────
+# ── gymnasium[mujoco] environment helpers ─────────────────────────────────────
 
 def _make_single_env(seed: int = 42):
-    """Create a dm_control manipulator-bring_ball env with 64×64 pixel observations."""
-    from dm_control import suite
-    from dm_control.suite.wrappers import pixels as pixel_wrapper
-    env = suite.load(
-        domain_name="manipulator",
-        task_name="bring_ball",
-        task_kwargs={"random": seed},
-    )
-    env = pixel_wrapper.Wrapper(
-        env,
-        pixels_only=True,
-        render_kwargs={"width": IMG_SIZE, "height": IMG_SIZE, "camera_id": 0},
+    """
+    Create a FetchPickAndPlace-v3 env with RGB pixel rendering.
+    Uses MuJoCo's native renderer (no system OpenGL needed when MUJOCO_GL=egl).
+    """
+    import gymnasium_robotics  # registers Fetch envs
+    gymnasium_robotics.register_robotics_envs()
+    import gymnasium as gym
+    env = gym.make(
+        "FetchPickAndPlace-v4",  # v3 deprecated
+        render_mode="rgb_array",
+        reward_type="dense",
+        max_episode_steps=EP_MAX_STEPS,
     )
     return env
 
 
-def _get_pixels(timestep) -> np.ndarray:
-    """Extract (H, W, 3) uint8 pixels from a dm_control TimeStep."""
-    return timestep.observation["pixels"].astype(np.uint8)
+def _get_pixels(env) -> np.ndarray:
+    """Render current frame as (IMG_SIZE, IMG_SIZE, 3) uint8."""
+    import cv2
+    frame = env.render()
+    if frame is None:
+        return np.zeros((IMG_SIZE, IMG_SIZE, 3), dtype=np.uint8)
+    frame = frame.astype(np.uint8)
+    if frame.shape[0] != IMG_SIZE or frame.shape[1] != IMG_SIZE:
+        frame = cv2.resize(frame, (IMG_SIZE, IMG_SIZE), interpolation=cv2.INTER_AREA)
+    return frame
 
 
 def _get_action_dim(env) -> int:
-    return int(env.action_spec().shape[0])
-
-
-def _random_action(env, n: int) -> np.ndarray:
-    """Sample n random actions within the env's action bounds."""
-    spec = env.action_spec()
-    return np.random.uniform(
-        spec.minimum, spec.maximum, size=(n, _get_action_dim(env))
-    ).astype(np.float32)
+    return int(env.action_space.shape[0])
 
 
 # ── World model training step ──────────────────────────────────────────────────
@@ -221,7 +224,6 @@ def _sample_goal_z(
     encoder: nn.Module,
     device: str,
 ) -> Optional[torch.Tensor]:
-    """70% from goal_buf, 30% from replay."""
     use_goal = len(goal_buf) > 0 and random.random() < 0.7
     raw = goal_buf.sample_raw(1) if use_goal else replay.sample_raw(1)
     if raw is None:
@@ -234,7 +236,7 @@ def _sample_goal_z(
 
 # ── Evaluation with video recording ───────────────────────────────────────────
 
-def _eval_dmcontrol(
+def _eval_fetch(
     encoder: nn.Module,
     predictor,
     goal_buf: GoalPixelBuffer,
@@ -256,25 +258,27 @@ def _eval_dmcontrol(
         n_elites=CEM_ELITES, n_iters=CEM_ITERS, device=device,
     )
 
-    successes   = 0
-    nears       = 0
+    successes    = 0
+    nears        = 0
     video_frames: List[np.ndarray] = []
 
     for ep in range(n_eps):
         env = _make_single_env(seed=1000 + ep)
-        timestep = env.reset()
+        obs, _ = env.reset()
         planner.reset()
 
+        rgb = _get_pixels(env)
         z_goal = _sample_goal_z(goal_buf, replay, encoder, device)
         if z_goal is None:
             with torch.no_grad():
-                z_goal = encoder(_pix_to_tensor(_get_pixels(timestep), device))
+                z_goal = encoder(_pix_to_tensor(rgb, device))
 
-        ep_best_reward = 0.0
-        record = save_video and ep == 0
+        ep_success  = False
+        ep_near     = False
+        record      = save_video and ep == 0
 
         for _ in range(EP_MAX_STEPS):
-            rgb = _get_pixels(timestep)
+            rgb = _get_pixels(env)
             if record:
                 video_frames.append(rgb.copy())
 
@@ -282,19 +286,20 @@ def _eval_dmcontrol(
                 z_cur = encoder(_pix_to_tensor(rgb, device))
 
             action = planner.plan(z_cur, z_goal)
-            timestep = env.step(action)
+            obs, reward, terminated, truncated, info = env.step(action)
 
-            r = timestep.reward or 0.0
-            if r > ep_best_reward:
-                ep_best_reward = r
+            if info.get("is_success", False):
+                ep_success = True
+            if reward > REWARD_GOAL_THRESH:
+                ep_near = True
 
-            if timestep.last():
+            if terminated or truncated:
                 break
 
         env.close()
-        if ep_best_reward > REWARD_SUCCESS_THRESH:
+        if ep_success:
             successes += 1
-        if ep_best_reward > REWARD_GOAL_THRESH:
+        if ep_near:
             nears += 1
 
     if save_video and video_frames:
@@ -339,12 +344,15 @@ def run_abm_loop(
     logger.info(f"[RUN35] condition={condition} device={device} "
                 f"observe={observe_steps} total={max_steps} n_envs={n_envs}")
 
-    # ── Environments (list of n_envs independent dm_control instances) ─────────
-    envs      = [_make_single_env(seed=seed + i) for i in range(n_envs)]
-    timesteps = [env.reset() for env in envs]
+    # ── Environments ────────────────────────────────────────────────────────────
+    envs = [_make_single_env(seed=seed + i) for i in range(n_envs)]
+    obs_list = []
+    for i, env in enumerate(envs):
+        obs, _ = env.reset(seed=seed + i)
+        obs_list.append(obs)
 
     a_dim = _get_action_dim(envs[0])
-    logger.info(f"[RUN35] dm_control manipulator-bring_ball | a_dim={a_dim}")
+    logger.info(f"[RUN35] FetchPickAndPlace-v4 | a_dim={a_dim}")
 
     # ── Model ───────────────────────────────────────────────────────────────────
     encoder   = ViTTinyEncoder(img_size=IMG_SIZE, z_dim=Z_DIM).to(device)
@@ -358,7 +366,7 @@ def run_abm_loop(
     # ── Metrics ─────────────────────────────────────────────────────────────────
     results: Dict = {
         "condition":       condition,
-        "env_type":        "dmcontrol_manipulator",
+        "env_type":        "fetch_picknplace",
         "env_steps":       [],
         "success_rate":    [],
         "near_rate":       [],
@@ -382,7 +390,8 @@ def run_abm_loop(
     global_step  = 0
     train_ticker = 0
 
-    rgb_batch = np.stack([_get_pixels(ts) for ts in timesteps])  # (n_envs, H, W, 3)
+    # Initial pixel batch — render after reset
+    rgb_batch = np.stack([_get_pixels(env) for env in envs])  # (n_envs, H, W, 3)
 
     while global_step < max_steps:
 
@@ -404,11 +413,11 @@ def run_abm_loop(
 
         # ── Action selection ────────────────────────────────────────────────────
         if phase == "OBSERVE" or planner is None:
-            actions_np = _random_action(envs[0], n_envs)
+            actions_np = np.stack([envs[0].action_space.sample() for _ in range(n_envs)])
         else:
             z_goal = _sample_goal_z(goal_buf, replay, encoder, device)
             if z_goal is None:
-                actions_np = _random_action(envs[0], n_envs)
+                actions_np = np.stack([envs[0].action_space.sample() for _ in range(n_envs)])
             else:
                 actions_np = np.zeros((n_envs, a_dim), dtype=np.float32)
                 for i in range(n_envs):
@@ -416,26 +425,22 @@ def run_abm_loop(
                         z_cur = encoder(_pix_to_tensor(rgb_batch[i], device))
                     actions_np[i] = planner.plan(z_cur, z_goal)
 
-        # ── Environment step (sequential over n_envs) ───────────────────────────
+        # ── Environment step ────────────────────────────────────────────────────
         next_rgb = np.zeros_like(rgb_batch)
         for i in range(n_envs):
-            ts = envs[i].step(actions_np[i])
-            r  = ts.reward or 0.0
-
-            pix_next = _get_pixels(ts)
+            obs, reward, terminated, truncated, info = envs[i].step(actions_np[i])
+            pix_next = _get_pixels(envs[i])
             next_rgb[i] = pix_next
 
             replay.push(rgb_batch[i], actions_np[i], pix_next)
-            if r > REWARD_GOAL_THRESH:
+            if reward > REWARD_GOAL_THRESH or info.get("is_success", False):
                 goal_buf.add(pix_next)
 
-            if ts.last():
-                ts = envs[i].reset()
-                next_rgb[i] = _get_pixels(ts)
+            if terminated or truncated:
+                obs, _ = envs[i].reset()
+                next_rgb[i] = _get_pixels(envs[i])
                 if planner is not None:
                     planner.reset()
-
-            timesteps[i] = ts
 
         global_step  += n_envs
         train_ticker += n_envs
@@ -452,7 +457,7 @@ def run_abm_loop(
 
         # ── Evaluation & logging ────────────────────────────────────────────────
         if global_step % EVAL_INTERVAL < n_envs:
-            metrics = _eval_dmcontrol(
+            metrics = _eval_fetch(
                 encoder, predictor, goal_buf, replay, a_dim, device,
                 step=global_step, save_video=True,
             )
