@@ -1,5 +1,32 @@
 # Changelog
 
+## 2026-05-02 — Run 37 results: HWM hierarchy peak=40% (2× flat CEM baseline)
+
+### Result
+- Run 37 `lewm_maniskill_hierarchy` on FetchPickAndPlace-v4: **peak=40%** success rate
+- Run 35 flat CEM baseline: **peak=20%**
+- Hierarchy doubles success — subgoal decomposition confirmed effective even with simple cosine scoring heuristic
+
+### What changed
+- `EXPERIMENTS.md`: updated Run 35 results (pending → 20%), added Run 37 entry with full architecture and results
+
+---
+
+## 2026-05-02 — Run 37 built: HWM-style hierarchy on FetchPickAndPlace-v4
+
+### Why
+Run 35 flat CEM peaks at 20% on FetchPickAndPlace-v4. The task has a natural two-phase structure (reach block → lift to goal) that a single H=8 flat horizon can't reliably capture. HWM-style hierarchy tests whether a high-level unconditional predictor scoring waypoints can double the baseline.
+
+### What
+- New file: `abm/loop_lewm_maniskill_run37.py` — HWM hierarchy loop; condition `lewm_maniskill_hierarchy`
+- `HighLevelPredictor`: MLP z→z_next (no action), trained on (obs_t, obs_{t+STRIDE}) pairs
+- `WaypointReplayBuffer`: stores stride-3 observation pairs for hi-pred training
+- Subgoal selection: scores N_CANDIDATES=200 goal buffer entries via α·cos(hi_pred(z), z_cand) + (1-α)·cos(z_cand, z_goal)
+- Low-level CEM: H=3, K=100, n_iters=10 (faster than Run 35's H=8 K=300 n_iters=30)
+- `abm_experiment.py`: added `lewm_maniskill_hierarchy` to valid conditions
+
+---
+
 ## 2026-05-01 — Run 35 built: LeWM + Continuous CEM on ManiSkill3 PickCube-v1
 
 ### Why

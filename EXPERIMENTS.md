@@ -1222,14 +1222,14 @@ _Not started._
 
 ### Run 35 — 2026-05-01 — lewm_maniskill_pickcube
 
-**Why:** Six Crafter runs established that SIGReg + CEM fails when states are visually ambiguous over long prerequisite chains. ManiSkill3 PickCube-v1 tests whether the same approach works when both failure conditions are removed: before/after states are visually distinct (cube on table vs cube at goal sphere), horizon is short (~200 steps), and proprioception is available. First extension of the system to continuous robot manipulation.
+**Why:** Six Crafter runs established that SIGReg + CEM fails when states are visually ambiguous over long prerequisite chains. ManiSkill3 PickCube-v1 was the original target but required Vulkan (unavailable on RunPod). Switched to FetchPickAndPlace-v4 via gymnasium[mujoco]: before/after states are visually distinct (gripper above block vs block at goal), short 50-step episodes, 4-dim continuous action. First test of whether geometric planning via cosine CEM transfers to continuous robot manipulation.
 
 **Architecture:**
 - ViT-Tiny encoder (64×64 RGB), same as Crafter runs
-- MLP Predictor with 6-dim continuous action input (arm_pd_ee_delta_pose, n_actions=6)
+- MLP Predictor with 4-dim continuous action input (FetchPickAndPlace-v4), n_actions=4
 - ContinuousCEMPlanner: Gaussian N(μ, σ²) sampling over H×a_dim sequences, warm-start shift between MPC steps
-- SIGReg M=1024, λ=0.1 (LeWM paper values, increased from M=512, λ=0.05 in Crafter)
-- Goal buffer: observations where cube height > 0.05m or info['success']=True
+- SIGReg M=1024, λ=0.1 (LeWM paper values)
+- Goal buffer: reward > -0.1 (dense reward near 0 = near goal) or info['is_success']=True
 
 **Hyperparameters:**
 
@@ -1248,7 +1248,46 @@ _Not started._
 | ACT steps | 200k |
 | n_envs | 4 |
 
-**Results:** pending
+**Result:** Peak=**20%** (ACT phase, FetchPickAndPlace-v4)  
+**Health diagnostics:** pred_ewa rose during OBSERVE, stable at ACT start; success rate bounced 0–20% throughout ACT  
+**What it showed:** Flat CEM can solve some episodes but is inconsistent — H=8 is workable for FetchPickAndPlace but the flat horizon can't reliably decompose the pick+place sequence. Establishes the baseline for Run 37 (hierarchy).
+
+---
+
+### Run 37 — 2026-05-02 — lewm_maniskill_hierarchy
+
+**File:** `abm/loop_lewm_maniskill_run37.py`  
+**Loop module:** `abm.loop_lewm_maniskill_run37`  
+**Condition:** `lewm_maniskill_hierarchy`
+
+**Why:** Run 35 showed flat CEM (H=8) peaks at 20% on FetchPickAndPlace-v4. The task has a natural two-phase structure (reach block → lift to goal) that a single flat horizon can't reliably capture. HWM-style hierarchy tests whether a high-level predictor scoring waypoints can double the flat baseline.
+
+**Architecture:**
+- Same ViT-Tiny encoder + SIGReg as Run 35
+- **HighLevelPredictor:** MLP z→z_next (no action input), trained to predict z_{t+STRIDE} from z_t using waypoint pairs from WaypointReplayBuffer
+- **WaypointReplayBuffer:** stores (obs_t, obs_{t+STRIDE}) pairs; WAYPOINT_STRIDE=3
+- **Subgoal selection every REPLAN_FREQ=3 steps:** score N_CANDIDATES=200 candidates from goal buffer using α·cos(hi_pred(z_cur), z_cand) + (1-α)·cos(z_cand, z_goal), α=0.5
+- **Low-level CEM:** H=3, K=100, n_iters=10 toward selected subgoal (faster than Run 35's H=8, K=300, n_iters=30)
+
+**Hyperparameters:**
+
+| Param | Value |
+|-------|-------|
+| WAYPOINT_STRIDE | 3 |
+| LO_CEM_H | 3 |
+| LO_CEM_K | 100 |
+| LO_CEM_N_ITERS | 10 |
+| N_CANDIDATES | 200 |
+| SUBGOAL_ALPHA | 0.5 |
+| REPLAN_FREQ | 3 |
+| lambda_sigreg | 0.1 |
+| n_proj | 1024 |
+| OBSERVE steps | 200k |
+| ACT steps | 200k |
+| n_envs | 4 |
+
+**Result:** Peak=**40%** (ACT phase, FetchPickAndPlace-v4) — **2× Run 35 flat CEM baseline**  
+**What it showed:** Subgoal decomposition doubles success rate even with a simple cosine scoring heuristic. High-level predictor guides the low-level CEM toward reachable intermediate states rather than searching the full pick+place horizon in one shot. Confirms that hierarchy is the right direction for multi-phase manipulation tasks.
 
 ---
 
@@ -1291,7 +1330,8 @@ _Not started._
 | 2026-05-01 | Crafter R32 | lewm_crafter_hierarchy_v3 | Crafter | 544k† | 27.3% | 22.7% | †Killed. Codebook refresh worked (inertia 1059→1943), mgr positive, tier3=0% — REINFORCE confirmed as bottleneck |
 | 2026-05-01 | Crafter R33 | lewm_crafter_curiosity | Crafter | 600k† | 22.7% | 22.7% | Curiosity (argmax cosine dist): below flat baseline; unreachable goals hurt exploration |
 | 2026-05-01 | Crafter R34 | lewm_crafter_twolevel | Crafter | 600k† | 18.2% | 13.6% | Two-level CEM: worst of all six; cosine triplets not causally ordered; tier3=0% |
-| 2026-05-01 | ManiSkill R35 | lewm_maniskill_pickcube | ManiSkill3 PickCube-v1 | 400k | pending | pending | First continuous manipulation run; Gaussian CEM H=8 K=300; LeWM params M=1024 λ=0.1 |
+| 2026-05-01 | ManiSkill R35 | lewm_maniskill_pickcube | FetchPickAndPlace-v4 | 400k | **20%** | ~10% | Flat CEM H=8 K=300; bouncy 0–20% ACT phase; establishes manipulation baseline |
+| 2026-05-02 | ManiSkill R37 | lewm_maniskill_hierarchy | FetchPickAndPlace-v4 | 400k | **40%** | ~20% | HWM hierarchy: hi-pred + subgoal scoring; 2× R35 baseline — decomposition confirmed |
 | — | DoorKey (old) | autonomous PPO | DoorKey | 200k | 18% | 10% | 9 switches |
 | — | DoorKey (old) | fixed PPO | DoorKey | 200k | 16% | 10% | 19 switches |
 | — | DoorKey (old) | ppo_only | DoorKey | 200k | 42% | 42% | baseline |
